@@ -1,0 +1,16 @@
+[package]
+name = "ysp-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Windows proof-of-concept: hidden WebView auth bridge + native mpv playback"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+tao = "0.37.3"
+url = "2"
+wry = "0.57.3"
+ysp-core = { path = "../ysp-core" }
+

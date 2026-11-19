@@ -1,0 +1,16 @@
+[package]
+name = "ysp-android-jni"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "JNI facade for the Android host"
+
+[lib]
+name = "ysp_core_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21"
+ysp-core = { path = "../ysp-core" }
+

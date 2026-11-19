@@ -1,0 +1,16 @@
+/target/
+/.idea/
+/.vscode/
+*.log
+*.apk
+*.aab
+*.so
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.jks
+*.keystore
+keystore.properties
+
