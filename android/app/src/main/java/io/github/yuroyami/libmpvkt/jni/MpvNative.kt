@@ -27,6 +27,7 @@ object MpvNative {
     external fun setPropertyString(handle: Long, name: String, value: String): Int
     external fun waitEvent(handle: Long, timeoutSeconds: Double): ByteArray?
     external fun wakeup(handle: Long)
+    external fun requestLogMessages(handle: Long, minLevel: String): Int
     external fun errorString(code: Int): String
 
     external fun surfaceHandle(surface: Surface): Long

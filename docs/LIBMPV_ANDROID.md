@@ -7,8 +7,9 @@ Android 端不是“预留接口”，已经接入真实的 libmpv JNI：
 - `LibMpvPlayer.kt`：创建 libmpv core、设置网络/缓存/硬解选项、加载 HLS、监听事件；
 - `MpvNative.kt`：对预编译 `libmpvkt_jni.so` 的最小 JNI 方法声明；
 - `PlaybackService.kt`：`mediaPlayback` 前台服务，持有 libmpv core 和通知；
-- `BaseLiveActivity.kt`：用 `SurfaceView` 接收画面，把 `Surface` 交给 libmpv；
-- `AuthWebViewBridge.kt`：隐藏 WebView 只做官方页面鉴权和 `get_live_info` 拦截。
+- `BaseLiveActivity.kt`：手机用 `TextureView`、TV 用 `SurfaceView` 接收画面，把 `Surface` 交给 libmpv；
+- `ChannelRepository.kt`：维护已验证的原生频道白名单；未列入的频道默认走官方兼容回退；
+- `AuthWebViewBridge.kt`：隐藏 WebView 完成官方鉴权和 `get_live_info` 拦截；原生模式下暂停官方媒体和 WebView，官方兼容模式下铺满屏幕播放官方页面。
 
 原生库位于：
 
@@ -95,18 +96,42 @@ Kiosk/默认桌面变体：
 
 每个 ABI 的 `jniLibs` 合计约 29.8 MB（arm64）和 35.9 MB（x86_64）；AAB 会由 Google Play 按设备 ABI 下发，下载体积明显小于 universal APK。当前 Gradle 的 strip 任务对预编译 `.so` 提示无法剥离，后续应使用匹配 NDK 的工具重新检查。
 
-## 5. 已实现和未验收
+## 5. 真机验收
+
+测试设备：
+
+- Redmi K30S Ultra `M2007J3SC`；
+- Android 12，arm64-v8a，1080x2400；
+- `standardDebug`，包名 `com.ysp.live`。
+
+已验收：
+
+- CCTV1、CCTV5 官方播放器出画，音频轨启动；
+- 北京卫视、江苏卫视原生路径可复现绿紫块；切到官方播放器后正常出画；
+- 天津卫视 libmpv 原生播放：H.264、1920x1080、25 fps、`hwdec-current=mediacodec-copy`；
+- 天津卫视稳定状态下只有一条原生 `AudioTrack`，隐藏 WebView 音轨在切台后约 100ms 内停止；
+- 官方频道首次加载后通过页面内 `changeTV()` 快速切台，普通切台约 2.1–2.3 秒出画；
+- 官方与原生之间切换、连续快切和重新鉴权均已验证；
+- 播放界面不显示底栏或停止按钮；单击画面或按电视确认键唤起频道列表，5 秒无操作自动回到直播；系统媒体通知仍保留停止入口；
+- 频道抽屉内置当天节目单，当前节目自动高亮；节目单请求与播放链路分离，不会中断正在播放的频道；
+- 原生播放时按 Home 再回到应用，TextureView Surface 会重新绑定，画面和音频继续；
+- 通知停止后不会自动重新鉴权，CCTV 和无媒体状态没有残留活跃音轨；
+- 真机日志未发现 `FATAL EXCEPTION`。
+
+当前策略不是“全部频道原生”，而是只把已验证频道放入 `NATIVE_VERIFIED_PIDS`。其他频道默认官方播放器，避免用户遇到已知异常码流。
 
 已实现：
 
 - 原生库打包、JNI 符号、ABI 依赖和 APK 构建；
 - Surface 绑定、HLS `loadfile`、暂停/停止、前台服务通知；
-- WebView 鉴权桥和 Rust/Kotlin URL 校验。
+- WebView 鉴权桥和 Rust/Kotlin URL 校验；
+- 官方播放器兼容回退和单音轨抑制；
+- 手机 `TextureView` 渲染与 TV `SurfaceView` 分路。
 
 未验收：
 
-- 没有连接 Android TV/手机，无法证明真机 Surface 初始化和首帧；
-- 未验证 MediaCodec 硬解、4K/8K/HDR/AVS3；
+- 未在 Android TV 上验证 Surface、D-pad、Kiosk 和遥控器媒体键；
+- 未逐路验证其余 23 路卫视，也未验证 4K/8K/HDR/AVS3/VIP 频道；
 - 未验证不同厂商 ROM 的后台保活、开机自启、WebView 版本和 D-pad；
 - 未验证 GPL 发行合规、内容授权和长期接口稳定性。
 

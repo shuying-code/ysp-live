@@ -1,15 +1,16 @@
 # YSP Live
 
-隐藏 WebView 只做官方鉴权桥，播放交给原生播放器。目标平台是 Android TV 和 Android 手机，同时提供一个 Windows 隐藏 WebView + mpv 可执行原型。
+隐藏 WebView 负责官方鉴权；已在真机验证可解码的频道交给原生播放器，其余频道使用官方页内播放做兼容回退。目标平台是 Android TV 和 Android 手机，同时提供一个 Windows 隐藏 WebView + mpv 可执行原型。
 
-> 项目状态：2026-11-19。Rust 核心、Windows 隐藏 WebView + mpv 原型、Android libmpv JNI 工程均已编译；Windows 端已实测拿到 CCTV1/天津卫视的 `live_info`。当前机器没有连接 Android 设备，Android 端尚未完成真机播放、硬解和开机自启验收。
+> 项目状态：2026-11-20。已在 Redmi K30S Ultra（`M2007J3SC`，Android 12，arm64）上安装 `standardDebug` 并完成真机播放验收。CCTV1/CCTV5、北京卫视和江苏卫视已实测官方播放；CCTV1 央视网备选页已实测全屏出画；天津卫视已实测 libmpv MediaCodec 硬解。频道切换、页内快速切台、重新鉴权和连续快切均已验证。Android TV、开机自启和 4K/8K/HDR/AVS3 仍未验收。
 
 ## 结论先说清楚
 
-- **不是必须把整个软件放进 WebView。** 官方 TV 页的最终播放链路是 HLS `.m3u8`，原生播放器可以拉流。
+- **不是所有频道都能直接原生播放。** CCTV 和部分卫视的 TS/H.264 码流在桌面 mpv 软件解码时也出现同样的绿紫块或解码错误，说明问题在上游码流，不在手机 GPU、TextureView 或 MediaCodec 初始化。
 - **不建议纯 Rust 复刻官方鉴权签名。** `cKey`、`signature`、`token`、`ysign` 都会变化，复刻成本和失效风险都高。
-- **推荐混合架构：** 隐藏 WebView 加载官方页面，让官方 JS 自己完成鉴权；拦截 `get_live_info` 的 `playurl`；把 URL 交给原生播放器。
-- **Windows 原型使用 mpv 进程；Android 使用 libmpv JNI + `SurfaceView`。** 两者都是原生播放，不会把最终播放器做成网页。Android 端使用预编译 libmpv/FFmpeg 原生库，WebView 只负责加载官方页面和捕获鉴权后的 HLS 地址。
+- **推荐混合架构：** 隐藏 WebView 加载官方页面，让官方 JS 自己完成鉴权；已验证的频道把 `get_live_info` 的 `playurl` 交给 libmpv，其他频道保留官方页内播放器作为兼容路径。
+- **Windows 原型使用 mpv 进程；Android 使用 libmpv JNI。** 手机使用 `TextureView`，Android TV 使用 `SurfaceView`。当前只有天津卫视进入原生白名单，避免其他频道落入可复现的绿块路径。
+- **原生模式不能让隐藏 WebView 继续出声。** 取流完成后会暂停官方 `<video>/<audio>` 并暂停整个 WebView，稳定状态只保留一条原生音频轨。
 - **Android 没有“普通 App 设置最高优先级”的官方接口。** 前台 `mediaPlayback` 服务是正常应用能获得的最高常驻级别；真正的开机直达需要专用 TV 的默认桌面/Device Owner/Kiosk，见 `docs/ANDROID_AUTOSTART_AND_PRIORITY.md`。
 
 ## 项目结构
@@ -32,7 +33,7 @@ ysp-live/
 
 ## 已实现
 
-- 64 路频道目录：40 路央视、24 路卫视，使用实际 `channelName`/`pid`/`streamId` 生成。
+- 频道种子 64 路：40 路央视、24 路卫视；应用过滤 VIP/付费档后展示 51 路免费频道。
 - `ysp-core`：频道目录、HLS URL 校验、桥消息解析、URL 租约过期判断、EPG URL 构造和单元测试。
 - Windows 桌面原型：
   - `tao` + `wry` 创建窗口；
@@ -42,8 +43,15 @@ ysp-live/
   - 启动参数包含 `Referer`，不打印完整播放 URL。
 - Android 工程：
   - `PhoneMainActivity`（LAUNCHER）和 `TvMainActivity`（LEANBACK_LAUNCHER）；
-  - 隐藏 1x1 WebView 鉴权桥；
-  - libmpv JNI + `SurfaceView` 原生 HLS 播放；
+  - 隐藏 WebView 鉴权桥；兼容频道可铺满屏幕使用官方播放器；
+  - libmpv JNI HLS 播放；手机 `TextureView`、TV `SurfaceView`；
+  - 原生白名单与官方兼容回退，避免已知异常码流直接显示绿紫块；
+  - 官方页首次加载后使用页面内 `changeTV` 切台，不再为每次换台重载整个播放器；
+  - 已实测普通切台、连续快切、官方/原生之间切换和重新鉴权；
+  - 播放界面不显示底栏或停止按钮；单击画面或按电视确认键唤起频道列表，当前频道高亮并居中，选台后保留频道界面，5 秒无操作自动回到直播；
+  - 抽屉展开时第一次点直播画面只收起节目单，第二次点画面收起频道栏，再次点击恢复完整抽屉；
+  - 频道抽屉内置当天节目单：当前节目高亮定位，方向键换频道时自动刷新，电视右方向键进入节目单浏览、左方向键返回；
+  - 主流 CCTV 频道在主源 10 秒未起播或明确失败时，自动改用央视网直播页作为备选线路；其他频道不受影响；
   - 预编译 libmpv/FFmpeg 原生库按 ABI 打入 APK；
   - `mediaPlayback` 前台服务、普通媒体通知和停止操作（MediaSession 尚未接入）；
   - `BootReceiver` 最佳努力自启；
@@ -145,7 +153,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ## 设计约束
 
 - 官方页面和播放接口不是公开稳定 API，可能随时变化。不要把某个抓包 URL、`cKey`、`token`、`ysign` 写死。
-- WebView 只负责鉴权，不负责最终视频渲染；一旦拿到 `playurl`，官方 `<video>` 会被暂停，避免双倍下载。
+- 原生白名单频道中，WebView 只负责鉴权；拿到 `playurl` 后暂停官方媒体和 WebView，避免双倍下载与双音轨。官方兼容频道则由 WebView 显示和播放官方页面。
+- 不把“提高某个 H.264 解码器兼容性”当作修复上游损坏码流的手段。无法可靠原生解码时回退官方播放器，不做 DRM 解密或保护绕过。
 - Android WebView 必须先注入脚本再加载页面；项目优先使用 `WebViewCompat.addDocumentStartJavaScript`，不支持时在 `onPageStarted` 回退注入。
 - 播放 URL 只保存在进程内，不写入 SharedPreferences；媒体通知和日志都不能出现完整 query。
 - 不实现 DRM 解密、付费绕过、去广告、地区绕过或接口签名伪造。
@@ -153,10 +162,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 
 ## 当前限制
 
-- 本机没有连接 Android 设备，Android TV/手机 APK 还没有完成真机启动、D-pad、WebView 版本、libmpv Surface 初始化、硬解、开机自启和不同厂商 ROM 的验收。
+- 真机验收范围是 Redmi K30S Ultra / Android 12 / arm64；不同厂商 ROM、Android TV、D-pad 和 WebView 版本仍需分别验收。
+- 原生白名单目前只有天津卫视。其余 23 路卫视没有逐路验证，默认走官方播放器；这不是声称它们全部已测试可用。
+- CCTV 和部分卫视原生播放会出现上游 H.264 损坏，回退官方播放器可正常出画和出声；不要通过伪造签名、解密或绕过保护来“修复”这些码流。
 - Android 手机在 Android 10+ 上通常不能被普通应用静默拉起 Activity；`BootReceiver` 只能尽力尝试，失败时回退为前台服务通知。
 - 4K/8K、HDR、AVS3 和 VIP 频道必须逐路验证；遇到不支持的码流应回退官方 WebView，而不是尝试破解。
 - 频道种子是 2026-11-19 页面快照，正式版本应从官方页面/授权 API 刷新。
+- 节目单当前只显示当天，直接解析央视频 protobuf 接口；多日浏览和定时刷新尚未实现。
 - 当前未接入 `MediaSession`，电视媒体键、锁屏媒体控制和系统媒体面板尚未完成验收。
 
 ## 当前实测体积
@@ -178,9 +190,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 
 ## 下一步
 
-1. 在目标 Android TV 和手机上安装 `standardDebug`，验证隐藏 WebView 能否取得 `live_info`、libmpv 能否播放 10 路代表频道。
+1. 在 Android TV 和更多手机 ROM 上安装 `standardDebug`，验证 D-pad、Surface、后台保活和不同 WebView 版本。
 2. 按 `docs/ANDROID_AUTOSTART_AND_PRIORITY.md` 的设备矩阵验证自启；TV 专用设备再验证 `kiosk` 默认桌面。
 3. 接入 `MediaSession`，补齐 TV 媒体键、锁屏媒体控制、音频焦点和来电/音频设备切换处理。
-4. 增加真实 EPG 请求、频道刷新、播放 URL 租约刷新、错误重试和远程日志脱敏。
+4. 增加 EPG 多日浏览与自动刷新、频道目录刷新、播放 URL 租约刷新、错误重试和远程日志脱敏。
 5. 完成内容授权、GPL 对应源码提供和发行合规审查后，才考虑商业分发。
 

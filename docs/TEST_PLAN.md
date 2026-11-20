@@ -16,6 +16,8 @@ cargo test -p ysp-core
 - Debug 脱敏；
 - URL 租约过期；
 - EPG URL 和日期校验。
+- 当天节目单 protobuf 解析、当前节目高亮、缓存命中、网络失败重试提示。
+- 频道方向键切换时节目单同步刷新；右键进入节目单、左键返回频道。
 
 ## 2. Windows 原型
 

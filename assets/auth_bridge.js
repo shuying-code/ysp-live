@@ -3,11 +3,49 @@
   window.__yspBridgeInstalled = true;
 
   var lastUrl = "";
+  var lastPid = "";
   var captured = false;
+  var nativeOwnsStream = false;
+  var nudgeTimer = null;
+  var nudgeAttempts = 0;
+  var focusedVideo = null;
+  var requestedPid = "";
+
+  function requestedPidFromLocation() {
+    try {
+      var match = /[?&]pid=([^&#]+)/.exec(location.href);
+      return match ? decodeURIComponent(match[1]) : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  requestedPid = requestedPidFromLocation();
+
+  function syncNativeMode() {
+    try {
+      if (
+        window.YspAndroidBridge &&
+        typeof window.YspAndroidBridge.isOfficialPlayerMode === "function"
+      ) {
+        nativeOwnsStream = !window.YspAndroidBridge.isOfficialPlayerMode();
+        if (nativeOwnsStream) silenceOfficialPlayback();
+      }
+    } catch (_) {}
+  }
 
   function allowedHost() {
     var host = String(location.hostname || "").toLowerCase();
-    return host === "yangshipin.cn" || host.endsWith(".yangshipin.cn");
+    return (
+      host === "yangshipin.cn" ||
+      host.endsWith(".yangshipin.cn") ||
+      host === "cctv.com" ||
+      host.endsWith(".cctv.com") ||
+      host === "cctv.cn" ||
+      host.endsWith(".cctv.cn") ||
+      host === "cntv.cn" ||
+      host.endsWith(".cntv.cn")
+    );
   }
 
   function post(payload) {
@@ -52,34 +90,91 @@
     });
   }
 
+  function findOfficialVideo() {
+    var videos = document.querySelectorAll("video");
+    if (!videos.length) return null;
+    var best = null;
+    var bestArea = 0;
+    for (var i = 0; i < videos.length; i += 1) {
+      var candidate = videos[i];
+      if (!candidate || !candidate.isConnected) continue;
+      var rect = candidate.getBoundingClientRect();
+      var area = Math.max(0, rect.width) * Math.max(0, rect.height);
+      if (!best || area > bestArea) {
+        best = candidate;
+        bestArea = area;
+      }
+    }
+    return best || videos[0];
+  }
+
+  function focusOfficialVideo(force) {
+    if (nativeOwnsStream) return false;
+    var video = findOfficialVideo();
+    if (!video) return false;
+    if (!force && video === focusedVideo && video.isConnected) return true;
+    focusedVideo = video;
+    var node = video;
+
+    while (node && node !== document.body && node.parentElement) {
+      var parent = node.parentElement;
+      var children = parent.children;
+      for (var i = 0; i < children.length; i += 1) {
+        var child = children[i];
+        if (child === node) continue;
+        if (/^(SCRIPT|STYLE|LINK|NOSCRIPT)$/.test(child.tagName)) continue;
+        child.style.setProperty("display", "none", "important");
+      }
+
+      node.style.setProperty("position", "fixed", "important");
+      node.style.setProperty("inset", "0", "important");
+      node.style.setProperty("width", "100vw", "important");
+      node.style.setProperty("height", "100vh", "important");
+      node.style.setProperty("transform", "none", "important");
+      node.style.setProperty("overflow", "hidden", "important");
+      node.style.setProperty("background", "#000", "important");
+      node.style.setProperty("z-index", "2147483647", "important");
+      node = parent;
+    }
+
+    document.documentElement.style.setProperty("background", "#000", "important");
+    document.body.style.setProperty("margin", "0", "important");
+    document.body.style.setProperty("overflow", "hidden", "important");
+    document.body.style.setProperty("background", "#000", "important");
+    video.style.setProperty("width", "100vw", "important");
+    video.style.setProperty("height", "100vh", "important");
+    video.style.setProperty("object-fit", "contain", "important");
+    video.style.setProperty("background", "#000", "important");
+    video.controls = false;
+    return true;
+  }
+
+  window.__yspFocusOfficialVideo = function () {
+    return focusOfficialVideo(true);
+  };
+
   function handlePlayerResponse(data) {
     if (!data || typeof data !== "object") return;
     var body = data.data && typeof data.data === "object" ? data.data : data;
     var playurl = body && body.playurl;
     if (typeof playurl !== "string" || !playurl) return;
-    if (playurl === lastUrl) return;
+    var livePid =
+      body.livepid == null ? "" : String(body.livepid);
+    if (requestedPid && livePid && livePid !== requestedPid) return;
+    if (playurl === lastUrl && livePid === lastPid) return;
     lastUrl = playurl;
+    lastPid = livePid;
     captured = true;
+    stopNudge();
 
     post({
       type: "live_info",
       playurl: playurl,
       defn: body.defn || null,
-      livepid:
-        body.livepid == null ? null : String(body.livepid),
+      livepid: livePid || null,
       formats: simplifyFormats(body.formats),
     });
 
-    // The native player now owns playback. Keep the page alive for refresh,
-    // but stop the official <video> so the stream is not downloaded twice.
-    window.setTimeout(function () {
-      try {
-        document.querySelectorAll("video").forEach(function (video) {
-          video.muted = true;
-          video.pause();
-        });
-      } catch (_) {}
-    }, 1200);
   }
 
   function parseMaybeJson(text) {
@@ -149,33 +244,222 @@
   }
 
   function nudgePlayback() {
-    if (captured) return;
+    if (nativeOwnsStream) {
+      silenceOfficialPlayback();
+      return;
+    }
+    if (captured) {
+      stopNudge();
+      return;
+    }
+    nudgeAttempts += 1;
+    if (nudgeAttempts > 8) {
+      stopNudge();
+      return;
+    }
+    focusOfficialVideo(false);
+    var video = findOfficialVideo();
+    if (!video) return;
     try {
-      var videos = document.querySelectorAll("video");
-      for (var i = 0; i < videos.length; i += 1) {
-        videos[i].muted = true;
-        var result = videos[i].play();
+      video.muted = true;
+      if (video.paused) {
+        var result = video.play();
         if (result && typeof result.catch === "function") result.catch(function () {});
       }
     } catch (_) {}
   }
 
-  window.setInterval(nudgePlayback, 1500);
-  window.setTimeout(nudgePlayback, 800);
+  function stopNudge() {
+    if (nudgeTimer) {
+      clearInterval(nudgeTimer);
+      nudgeTimer = null;
+    }
+  }
+
+  function startNudge() {
+    stopNudge();
+    nudgeAttempts = 0;
+    nudgeTimer = window.setInterval(nudgePlayback, 2000);
+    window.setTimeout(nudgePlayback, 600);
+  }
+
+  startNudge();
+  syncNativeMode();
+  document.addEventListener(
+    "DOMContentLoaded",
+    function () {
+      if (!requestedPid) requestedPid = requestedPidFromLocation();
+      syncNativeMode();
+    },
+    { once: true },
+  );
+
+  function silenceOfficialPlayback() {
+    try {
+      document.querySelectorAll("video,audio").forEach(function (video) {
+        video.muted = true;
+        if (!video.paused) video.pause();
+      });
+    } catch (_) {}
+  }
+
+  window.__yspPauseOfficialVideo = function () {
+    silenceOfficialPlayback();
+    return true;
+  };
+
+  window.__yspResumeOfficialVideo = function () {
+    if (nativeOwnsStream) return false;
+    var video = findOfficialVideo();
+    if (!video) return false;
+    try {
+      document.querySelectorAll("video,audio").forEach(function (candidate) {
+        if (candidate !== video) {
+          candidate.muted = true;
+          candidate.volume = 0;
+        }
+      });
+      video.muted = false;
+      video.volume = 1;
+      if (video.paused) {
+        var result = video.play();
+        if (result && typeof result.catch === "function") result.catch(function () {});
+      }
+    } catch (_) {}
+    focusOfficialVideo(true);
+    return true;
+  };
+
+  document.addEventListener(
+    "play",
+    function (event) {
+      if (!nativeOwnsStream) return;
+      var target = event.target;
+      if (!target || !/^(VIDEO|AUDIO)$/.test(target.tagName)) return;
+      try {
+        target.muted = true;
+        target.pause();
+      } catch (_) {}
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "playing",
+    function (event) {
+      if (nativeOwnsStream) return;
+      var target = event.target;
+      if (!target || !/^(VIDEO|AUDIO)$/.test(target.tagName)) return;
+      focusOfficialVideo(false);
+      post({ type: "playing" });
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "waiting",
+    function (event) {
+      if (nativeOwnsStream) return;
+      var target = event.target;
+      if (!target || target.tagName !== "VIDEO") return;
+      post({ type: "buffering" });
+    },
+    true,
+  );
+
+  window.__yspSetNativeMode = function (enabled) {
+    nativeOwnsStream = Boolean(enabled);
+    if (nativeOwnsStream) silenceOfficialPlayback();
+  };
+
+  function prepareChannelSwitch(pid) {
+    requestedPid = String(pid || "");
+    captured = false;
+    lastUrl = "";
+    lastPid = "";
+    focusedVideo = null;
+    silenceOfficialPlayback();
+    startNudge();
+  }
+
+  function findTvComponent() {
+    var app =
+      document.getElementById("app") ||
+      document.querySelector("#app") ||
+      document.body;
+    var root = app && app.__vue__;
+    if (!root) return null;
+    var stack = [root];
+    var visited = [];
+    while (stack.length) {
+      var vm = stack.pop();
+      if (!vm || visited.indexOf(vm) >= 0) continue;
+      visited.push(vm);
+      if (typeof vm.changeTV === "function") return vm;
+      if (vm.$children && vm.$children.length) {
+        for (var i = 0; i < vm.$children.length; i += 1) {
+          stack.push(vm.$children[i]);
+        }
+      }
+    }
+    return null;
+  }
+
+  function findTvChannel(vm, pid) {
+    var groups = [vm.tabA, vm.tabB];
+    for (var i = 0; i < groups.length; i += 1) {
+      var group = groups[i];
+      if (!Array.isArray(group)) continue;
+      for (var j = 0; j < group.length; j += 1) {
+        if (group[j] && String(group[j].pid) === pid) return group[j];
+      }
+    }
+    return null;
+  }
+
+  window.__yspSwitchOfficialChannel = function (pid) {
+    var targetPid = String(pid || "");
+    if (!targetPid) return false;
+    var vm = findTvComponent();
+    if (!vm) return false;
+    var channel = findTvChannel(vm, targetPid);
+    if (!channel) return false;
+    if (vm.tvIndex && String(vm.tvIndex.pid) === targetPid) {
+      requestedPid = targetPid;
+      return true;
+    }
+    try {
+      prepareChannelSwitch(targetPid);
+      vm.changeTV(channel);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
 
   window.addEventListener("error", function (event) {
+    if (captured) return;
+    var message = String((event && event.message) || "page error");
+    if (/AbortError/.test(message) && /play\(\) request was interrupted/.test(message)) {
+      return;
+    }
     post({
       type: "error",
       code: "page_error",
-      message: String((event && event.message) || "page error").slice(0, 300),
+      message: message.slice(0, 300),
     });
   });
 
   window.addEventListener("unhandledrejection", function (event) {
+    if (captured) return;
+    var message = String((event && event.reason) || "unhandled rejection");
+    if (/AbortError/.test(message) && /play\(\) request was interrupted/.test(message)) {
+      return;
+    }
     post({
       type: "error",
       code: "unhandled_rejection",
-      message: String((event && event.reason) || "unhandled rejection").slice(0, 300),
+      message: message.slice(0, 300),
     });
   });
 

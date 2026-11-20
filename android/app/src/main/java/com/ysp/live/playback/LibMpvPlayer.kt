@@ -3,6 +3,7 @@ package com.ysp.live.playback
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import io.github.yuroyami.libmpvkt.jni.MpvNative
@@ -45,6 +46,9 @@ class LibMpvPlayer(
     private var surfaceHandle = 0L
     private var eventThread: Thread? = null
     private var lastStatus = ""
+    private var lastInspectAt = 0L
+    private var wasPausedForCache = false
+    private var suppressEndEventUntil = 0L
 
     fun start(): Boolean = synchronized(lock) {
         if (handle != 0L) return true
@@ -60,10 +64,19 @@ class LibMpvPlayer(
             setOption("ytdl", "no")
             setOption("keep-open", "no")
             setOption("force-window", "no")
+            setOption("keepaspect", "yes")
+            setOption("panscan", "0")
+            setOption("vo", "null")
+            setOption("gpu-context", "android")
+            setOption("opengl-es", "yes")
             setOption("hwdec", "auto-safe")
             setOption("cache", "yes")
-            setOption("cache-secs", "20")
-            setOption("demuxer-max-bytes", "256MiB")
+            setOption("cache-secs", "5")
+            setOption("cache-pause", "yes")
+            setOption("cache-pause-wait", "1")
+            setOption("demuxer-readahead-secs", "2")
+            setOption("demuxer-max-bytes", "64MiB")
+            setOption("demuxer-max-back-bytes", "16MiB")
             setOption("network-timeout", "20")
             setOption("user-agent", USER_AGENT)
             setOption("http-header-fields", "Referer: https://yangshipin.cn/")
@@ -72,6 +85,7 @@ class LibMpvPlayer(
             check(result >= 0) {
                 "mpv_initialize 失败: ${MpvNative.errorString(result)}"
             }
+            MpvNative.requestLogMessages(handle, "warn")
 
             closing = false
             eventThread = Thread(::eventLoop, "ysp-mpv-events").apply {
@@ -91,7 +105,7 @@ class LibMpvPlayer(
         started
     }
 
-    fun attachSurface(surface: Surface) {
+    fun attachSurface(surface: Surface, width: Int, height: Int) {
         synchronized(lock) {
             if (handle == 0L || !surface.isValid) return
             detachSurfaceLocked()
@@ -107,8 +121,21 @@ class LibMpvPlayer(
                 listener.onError("无法绑定视频 Surface")
                 return
             }
-            MpvNative.setOptionString(handle, "force-window", "yes")
-            MpvNative.setPropertyString(handle, "vo", "gpu")
+            val forceWindowResult = MpvNative.setOptionString(handle, "force-window", "yes")
+            val voResult = MpvNative.setPropertyString(handle, "vo", "gpu")
+            val sizeResult = resizeSurfaceLocked(width, height)
+            Log.i(
+                TAG,
+                "绑定 Surface: wid=$result force-window=$forceWindowResult " +
+                    "vo=$voResult size=$sizeResult ${surfaceSize(width, height)}",
+            )
+            logState("surface-attached")
+        }
+    }
+
+    fun resizeSurface(width: Int, height: Int) {
+        synchronized(lock) {
+            resizeSurfaceLocked(width, height)
         }
     }
 
@@ -124,8 +151,11 @@ class LibMpvPlayer(
             return
         }
         currentTitle = title
-        loaded = true
+        wasPausedForCache = false
         val result = synchronized(lock) {
+            if (loaded) {
+                suppressEndEventUntil = SystemClock.elapsedRealtime() + 1_500
+            }
             MpvNative.command(handle, arrayOf("loadfile", url, "replace"))
         }
         if (result < 0) {
@@ -135,10 +165,12 @@ class LibMpvPlayer(
             listener.onError("载入直播流失败：$reason")
             return
         }
+        loaded = true
         synchronized(lock) {
             MpvNative.setPropertyString(handle, "pause", "no")
         }
         reportStatus("正在连接 · $title")
+        logState("loadfile")
     }
 
     fun pause() {
@@ -159,8 +191,10 @@ class LibMpvPlayer(
 
     fun stop() {
         loaded = false
+        wasPausedForCache = false
         synchronized(lock) {
             if (handle != 0L) {
+                suppressEndEventUntil = SystemClock.elapsedRealtime() + 1_500
                 MpvNative.command(handle, arrayOf("stop"))
             }
         }
@@ -188,7 +222,6 @@ class LibMpvPlayer(
     }
 
     private fun eventLoop() {
-        var tick = 0
         while (!closing && handle != 0L) {
             val packet = runCatching { MpvNative.waitEvent(handle, 0.5) }
                 .getOrNull()
@@ -201,23 +234,30 @@ class LibMpvPlayer(
             val error = buffer.getInt(12)
             when (eventId) {
                 1 -> break
+                2 -> logMessage(packet)
                 7 -> {
-                    loaded = false
-                    if (error < 0) {
-                        val reason = runCatching { MpvNative.errorString(error) }
-                            .getOrDefault("播放结束")
-                        mainHandler.post { listener.onError(reason) }
+                    if (SystemClock.elapsedRealtime() < suppressEndEventUntil) {
+                        suppressEndEventUntil = 0L
                     } else {
-                        mainHandler.post { listener.onEnded() }
+                        loaded = false
+                        if (error < 0) {
+                            val reason = runCatching { MpvNative.errorString(error) }
+                                .getOrDefault("播放结束")
+                            mainHandler.post { listener.onError(reason) }
+                        } else {
+                            mainHandler.post { listener.onEnded() }
+                        }
                     }
                 }
                 8 -> {
                     reportStatus("正在播放 · $currentTitle")
+                    logState("file-loaded")
                 }
             }
 
-            tick += 1
-            if (tick % 2 == 0) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastInspectAt >= 1_000L) {
+                lastInspectAt = now
                 inspectState()
             }
         }
@@ -225,10 +265,19 @@ class LibMpvPlayer(
 
     private fun inspectState() {
         if (handle == 0L || closing) return
-        val pausedForCache = property("paused-for-cache")
-        if (pausedForCache == "yes") {
-            reportStatus("缓冲中 · $currentTitle")
+        val pausedForCache = property("paused-for-cache") == "yes"
+        if (pausedForCache) {
+            if (!wasPausedForCache) {
+                reportStatus("缓冲中 · $currentTitle")
+            }
+            wasPausedForCache = true
             return
+        }
+        if (wasPausedForCache) {
+            wasPausedForCache = false
+            if (loaded) {
+                reportStatus("正在播放 · $currentTitle")
+            }
         }
 
         val idle = property("idle-active")
@@ -259,6 +308,72 @@ class LibMpvPlayer(
         surfaceHandle = 0L
     }
 
+    private fun resizeSurfaceLocked(width: Int, height: Int): Int {
+        if (handle == 0L || surfaceHandle == 0L || width <= 0 || height <= 0) return -1
+        return MpvNative.setPropertyString(
+            handle,
+            "android-surface-size",
+            surfaceSize(width, height),
+        )
+    }
+
+    private fun logMessage(packet: ByteArray) {
+        val values = decodeStringMap(packet) ?: return
+        val text = values["text"].orEmpty().trim()
+        if (text.isBlank()) return
+        val redacted = text.replace(Regex("""https?://\S+"""), "<url>")
+        if (KNOWN_NOISE.any { redacted.contains(it) }) return
+        val prefix = values["prefix"].orEmpty()
+        val level = values["level"].orEmpty()
+        Log.i(TAG, "mpv[$level/$prefix] $redacted")
+    }
+
+    private fun logState(stage: String) {
+        if (handle == 0L || closing) return
+        val fields = listOf(
+            "video-format",
+            "width",
+            "height",
+            "hwdec-current",
+            "estimated-vf-fps",
+            "idle-active",
+            "paused-for-cache",
+        )
+        val state = fields.joinToString(" ") { name ->
+            "$name=${property(name) ?: "<unavailable>"}"
+        }
+        Log.i(TAG, "状态[$stage] $state")
+    }
+
+    private fun surfaceSize(width: Int, height: Int): String = "${width}x$height"
+
+    private fun decodeStringMap(packet: ByteArray): Map<String, String>? {
+        val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
+        if (buffer.getInt(0) != 2 || packet.size < 17) return null
+        buffer.position(16)
+        if (buffer.get().toInt() != 8) return null
+        val count = buffer.int
+        if (count < 0) return null
+        val values = linkedMapOf<String, String>()
+        repeat(count) {
+            if (buffer.remaining() < 5) return values
+            val keyLength = buffer.int
+            if (keyLength < 0 || keyLength > buffer.remaining()) return values
+            val key = ByteArray(keyLength).also(buffer::get).toString(Charsets.UTF_8)
+            if (buffer.remaining() < 1) return values
+            val tag = buffer.get().toInt()
+            if (tag == 1) {
+                if (buffer.remaining() < 4) return values
+                val valueLength = buffer.int
+                if (valueLength < 0 || valueLength > buffer.remaining()) return values
+                values[key] = ByteArray(valueLength).also(buffer::get).toString(Charsets.UTF_8)
+            } else {
+                return values
+            }
+        }
+        return values
+    }
+
     private fun reportStatus(text: String) {
         if (text == lastStatus) return
         lastStatus = text
@@ -278,5 +393,9 @@ class LibMpvPlayer(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                 "AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/131.0.0.0 Safari/537.36"
+        private val KNOWN_NOISE = listOf(
+            "h264_mediacodec: Both surface and native_window are NULL",
+            "Packet corrupt",
+        )
     }
 }

@@ -40,6 +40,7 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
     private val binder = LocalBinder()
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var player: LibMpvPlayer
+    private var lastNotificationText: String? = null
 
     var currentPid: String? = null
         private set
@@ -55,7 +56,9 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
         super.onCreate()
         NotificationChannels.ensure(this)
         player = LibMpvPlayer(this, this)
-        startForegroundCompat(buildNotification("正在准备 libmpv"))
+        val notificationText = "正在准备 libmpv"
+        lastNotificationText = notificationText
+        startForegroundCompat(buildNotification(notificationText))
         player.start()
     }
 
@@ -88,8 +91,12 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
         player.play(url, title, pid)
     }
 
-    fun attachSurface(surface: Surface) {
-        if (::player.isInitialized) player.attachSurface(surface)
+    fun attachSurface(surface: Surface, width: Int, height: Int) {
+        if (::player.isInitialized) player.attachSurface(surface, width, height)
+    }
+
+    fun resizeSurface(width: Int, height: Int) {
+        if (::player.isInitialized) player.resizeSurface(width, height)
     }
 
     fun detachSurface() {
@@ -174,6 +181,8 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
     }
 
     private fun updateNotification(text: String) {
+        if (text == lastNotificationText) return
+        lastNotificationText = text
         runCatching {
             getSystemService(NotificationManager::class.java)
                 .notify(NOTIFICATION_ID, buildNotification(text))

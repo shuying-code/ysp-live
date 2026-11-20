@@ -3,7 +3,7 @@
 > 目标：在电视/电视盒子上播放央视频 TV 页中的央视和卫视直播。
 > 结论日期：2026-11-19。接口与页面会变化，以下内容应作为可行性依据，不应把 URL 或签名写死。
 
-> **执行版说明（2026-11-19）**：本文保留早期方案对比和 Linux/Windows/Tizen 的可行性分析。项目的实际执行版本已经确定为 **Android TV + Android 手机：Kotlin 宿主 + Rust 共享核心/JNI + 隐藏 WebView 鉴权桥 + libmpv JNI 原生播放**。当前包体和已实现状态以 `README.md`、`ARCHITECTURE.md`、`LIBMPV_ANDROID.md` 和 `PACKAGING_AND_SIZES.md` 为准；下文出现 Media3/ExoPlayer 的地方，除明确标注为可选回退外，均不是当前默认播放器。
+> **执行版说明（2026-11-19）**：本文保留早期方案对比和 Linux/Windows/Tizen 的可行性分析。项目的实际执行版本已经确定为 **Android TV + Android 手机：Kotlin 宿主 + Rust 共享核心/JNI + 隐藏 WebView 鉴权桥 + libmpv JNI 原生播放**；真机验证发现 CCTV 和部分卫视上游 H.264 异常时使用官方 WebView 兼容回退。当前包体和已实现状态以 `README.md`、`ARCHITECTURE.md`、`LIBMPV_ANDROID.md` 和 `PACKAGING_AND_SIZES.md` 为准；下文出现 Media3/ExoPlayer 的地方，除明确标注为可选回退外，均不是当前默认播放器。
 
 ## 1. 结论
 

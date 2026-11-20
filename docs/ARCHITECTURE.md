@@ -4,7 +4,7 @@
 
 在 Android TV 和 Android 手机上播放央视频 TV 页面内的央视/卫视直播，同时满足：
 
-- 不把最终播放做成 WebView 页面；
+- 对已验证频道使用原生播放，其他频道允许官方 WebView 兼容回退；
 - 页面改签名、改 token 时，尽量不跟着改原生播放器；
 - TV 有可用遥控器焦点，手机有全屏/后台播放；
 - 能解释并实现普通 Android 应用可用的前台服务和开机自启；
@@ -26,8 +26,9 @@
 │ tao + wry(WebView2)          │          │ PhoneMainActivity           │
 │ 初始化脚本拦截 get_live_info │          │ TvMainActivity              │
 │ mpv 子进程 / 全屏原生播放    │          │ Compose 不强制；当前用 View │
-└──────────────────────────────┘          │ libmpv JNI + SurfaceView   │
-                                          │ 隐藏 WebView 鉴权桥        │
+└──────────────────────────────┘          │ libmpv JNI + TextureView/  │
+                                          │ SurfaceView               │
+                                          │ WebView 鉴权/官方兼容回退  │
                                           │ mediaPlayback 前台服务     │
                                           └─────────────────────────────┘
 ```
@@ -40,8 +41,8 @@ Windows/Linux 桌面已经有成熟的 mpv/libmpv 分发方式，直接使用 `-
 
 ### Android
 
-- 本项目按指定方案，将隐藏 WebView 只用于官方鉴权，最终播放交给 libmpv JNI；
-- `PlaybackService` 持有 libmpv core，Activity 把 `SurfaceView` 的 `Surface` 交给它渲染；
+- 已验证频道使用隐藏 WebView 鉴权，最终播放交给 libmpv JNI；其他频道使用官方播放器兼容回退；
+- `PlaybackService` 持有 libmpv core，手机 Activity 把 `TextureView` 的 `Surface` 交给它，TV 使用 `SurfaceView`；
 - 预编译原生库来自 `libmpv-kotlin-multiplatform` v0.3.0（mpv 0.41、FFmpeg 9.0.1），采用 GPL-3.0-or-later 的 Android 构建；
 - `arm64-v8a` 单 ABI 调试包实测约 32.1 MB，release 约 31.6 MB；arm64 AAB 约 15.2 MB；
 - 多 ABI universal APK 会把 `x86_64` 也打进去，实测约 68.1 MB，因此发布时优先按 ABI 拆分或使用 AAB；
@@ -55,7 +56,7 @@ Media3/ExoPlayer 仍是可替代的原生后端，但当前工程已经移除 Me
 用户选台
   │
   ▼
-MainActivity 保存 pid，pause 旧原生播放器
+MainActivity 保存 pid，停止或暂停旧播放器
   │
   ▼
 AuthWebViewBridge.load(pid)
@@ -67,12 +68,11 @@ auth_bridge.js 捕获 data.playurl，只回传 HLS URL 和公开元数据
   ▼
 Rust/Kotlin 校验：https + host + .m3u8 + 非空
   │
-  ▼
-libmpv JNI 原生播放（Android）/ mpv 子进程（Windows）
-  │
-  ├─ 成功后暂停官方 <video>，避免重复下载
-  ├─ 失败：URL 过期/403/断网 → 重新加载官方页面鉴权
-  └─ 不支持码流/DRM → 显示错误或回退官方 WebView（产品化再做）
+  ├─ 已验证原生频道 → libmpv JNI（Android）/ mpv（Windows）
+  │    ├─ 取流后暂停 <video>/<audio> 并暂停 WebView
+  │    ├─ 失败：URL 过期/403/断网 → 重新加载官方页面鉴权
+  │    └─ 已知码流异常 → 不再强行解码
+  └─ 其他频道 → 官方 WebView 播放器兼容回退
 ```
 
 ## 5. 桥接实现细节
@@ -86,12 +86,16 @@ libmpv JNI 原生播放（Android）/ mpv 子进程（Windows）
 - 页面 JS 必须早于官方播放器脚本执行；Android 优先使用 `WebViewCompat.addDocumentStartJavaScript`，旧 WebView 在 `onPageStarted` 回退注入，并记录兼容性风险。
 - `window.ipc` 只允许 `yangshipin.cn`/子域页面发消息；宿主再次校验消息类型和 HLS 结构，不能信任页面内容。
 - URL 不进日志、不进通知、不写 SharedPreferences；只在内存中从桥传到播放器。
-- 拿到 URL 后 JS 将官方视频静音并暂停；WebView 保留用于后续重新鉴权。
+- 原生模式拿到 URL 后 JS 将官方视频静音并暂停，宿主再暂停 WebView；页面保留用于后续重新鉴权。
+- 官方页首次加载完成后，后续切台调用同一 Vue 页面的 `changeTV()`，保留播放器实例和页面资源。
+- 切台期间暂停旧频道媒体，并用页面状态与 `livepid` 双重校验隔离旧取流回调和旧 `playing` 事件。
+- 官方兼容模式显示官方页面和播放器，不叠加常驻底栏；单击画面或按电视确认键唤起频道列表，5 秒无操作自动隐藏。
+- 频道抽屉右侧显示当天 EPG。节目单接口返回 protobuf，由 `EpgRepository` 原生请求和解析，按 `pid/date` 做进程内缓存；当前节目高亮并自动定位，频道高亮变化时自动加载对应节目单。
 
 ## 6. TV/手机 UI
 
-- TV：`TvMainActivity` 强制横屏，使用 `LEANBACK_LAUNCHER`，频道列表和按钮都可被 D-pad 聚焦；目标是把焦点限制在少量控件内。
-- 手机：`PhoneMainActivity` 使用 `LAUNCHER`，同样支持全屏和后台播放，但不申请 TV 的 HOME 入口。
+- TV：`TvMainActivity` 强制横屏，使用 `LEANBACK_LAUNCHER`；画面全屏，D-pad 确认键唤起频道列表，上下键选择频道，右键进入节目单，左键返回频道，确认键切台。
+- 手机：`PhoneMainActivity` 使用 `LAUNCHER`，原生画面用 `TextureView`，同样支持全屏和后台播放，但不申请 TV 的 HOME 入口。
 - 两个入口共享 `BaseLiveActivity`，避免播放、鉴权和自启逻辑分叉。
 - 当前 UI 使用 Android View 而不是 Compose，减少依赖和首版构建风险；后续可以在不改变 Rust/桥协议的情况下替换为 Compose for TV。
 
@@ -100,11 +104,12 @@ libmpv JNI 原生播放（Android）/ mpv 子进程（Windows）
 ```text
 MainActivity ──bind──► PlaybackService (foreground, mediaPlayback)
      │                         │
-     │                         ├─ libmpv core + SurfaceView Surface
+     │                         ├─ libmpv core + TextureView/SurfaceView Surface
      │                         └─ Notification + PendingIntent
      │
-     └─ AuthWebViewBridge (1x1 attached WebView)
-              └─ HTTP(S) official page + player JS
+     └─ AuthWebViewBridge (attached WebView)
+              ├─ 原生模式：1x1 鉴权、取流后暂停
+              └─ 兼容模式：全屏官方播放器
 ```
 
 - Activity `onStop` 解绑播放服务但不强制停止播放；通知提供停止入口。
