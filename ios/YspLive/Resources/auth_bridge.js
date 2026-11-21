@@ -16,6 +16,8 @@
   var nextVideoId = 0;
   var backupVideo = null;
   var backupHls = null;
+  var lastHeartbeatTime = -1;
+  var heartbeatTimer = null;
 
   function requestedPidFromLocation() {
     try {
@@ -178,6 +180,46 @@
       backup: isBackupMedia(video),
     });
     return dimensions;
+  }
+
+  function startVideoHeartbeat() {
+    if (heartbeatTimer) return;
+    if (
+      !window.webkit ||
+      !window.webkit.messageHandlers ||
+      !window.webkit.messageHandlers.yspBridge
+    ) {
+      return;
+    }
+    heartbeatTimer = window.setInterval(function () {
+      if (nativeOwnsStream) {
+        silenceOfficialPlayback();
+        return;
+      }
+      var video = findOfficialVideo();
+      if (!video || video.paused || Number(video.readyState || 0) < 2) {
+        return;
+      }
+      var dimensions = videoDimensions(video);
+      var currentTime = Number(video.currentTime || 0);
+      if (!dimensions || !isFinite(currentTime)) {
+        return;
+      }
+      if (currentTime < lastHeartbeatTime - 1) {
+        lastHeartbeatTime = -1;
+      }
+      if (currentTime <= lastHeartbeatTime + 0.04) {
+        return;
+      }
+      lastHeartbeatTime = currentTime;
+      post({
+        type: "video_progress",
+        currentTime: currentTime,
+        width: dimensions.width,
+        height: dimensions.height,
+        backup: isBackupMedia(video),
+      });
+    }, 2000);
   }
 
   function focusOfficialVideo(force) {
@@ -396,6 +438,7 @@
   }
 
   startNudge();
+  startVideoHeartbeat();
   syncNativeMode();
 
   document.addEventListener(
@@ -470,6 +513,7 @@
       backupVideo = null;
     }
     window.__yspBackupActive = false;
+    lastHeartbeatTime = -1;
     lastVideoWidth = 0;
     lastVideoHeight = 0;
     var app = document.getElementById("app");
@@ -755,6 +799,7 @@
     lastUrl = "";
     lastPid = "";
     lastDefn = "";
+    lastHeartbeatTime = -1;
     focusedVideo = null;
     stopBackupPlayback();
     silenceOfficialPlayback();

@@ -43,8 +43,11 @@ struct RootView: View {
                 if channels.isEmpty && catalogError == nil {
                     LoadingOverlay(message: "正在读取频道目录…")
                         .zIndex(1)
-                } else if playback.isPreparing || playback.isBuffering {
+                } else if playback.isPreparing && !playback.hasVisibleVideo {
                     LoadingOverlay(message: playback.status)
+                        .zIndex(1)
+                } else if playback.isPreparing || playback.isBuffering {
+                    BufferingBadge(message: playback.status)
                         .zIndex(1)
                 }
 
@@ -460,6 +463,34 @@ private struct LoadingOverlay: View {
                     .padding(.horizontal, 24)
             }
         }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct BufferingBadge: View {
+    let message: String
+
+    var body: some View {
+        VStack {
+            HStack(spacing: 9) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(AndroidTheme.progress)
+                    .scaleEffect(0.8)
+                Text(message)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AndroidTheme.statusText)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Color.black.opacity(0.68))
+            .clipShape(Capsule())
+            .padding(.top, 18)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
     }
 }

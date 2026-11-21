@@ -10,6 +10,7 @@ final class PlaybackController: NSObject, ObservableObject {
     @Published private(set) var status = "选择一个频道开始播放"
     @Published private(set) var isPreparing = false
     @Published private(set) var isBuffering = false
+    @Published private(set) var hasVisibleVideo = false
     @Published private(set) var usesOfficialPlayer = false
     @Published var errorMessage: String?
 
@@ -82,6 +83,7 @@ final class PlaybackController: NSObject, ObservableObject {
     private var officialStartedAt = Date()
     private var officialPlaying = false
     private var officialProbeInFlight = false
+    private var officialProbeStartedAt = Date.distantPast
     private var officialLastPosition = 0.0
     private var officialVideoId: String?
     private var officialLastProgressAt = Date.distantPast
@@ -199,6 +201,7 @@ final class PlaybackController: NSObject, ObservableObject {
         officialHasVideoFrame = false
         isPreparing = true
         isBuffering = false
+        hasVisibleVideo = false
         errorMessage = nil
         status = "正在加载官方鉴权页…"
         hasRenderedFrame = false
@@ -280,6 +283,7 @@ final class PlaybackController: NSObject, ObservableObject {
         officialHasVideoFrame = false
         isPreparing = false
         isBuffering = false
+        hasVisibleVideo = false
         hasRenderedFrame = false
         status = "选择一个频道开始播放"
         webView.isHidden = true
@@ -377,10 +381,22 @@ final class PlaybackController: NSObject, ObservableObject {
             authTimeoutTask?.cancel()
             authTimeoutTask = nil
             if encryption != nil, encryption != 0 {
+                logPlayback(
+                    "live_info pid=\(channel.pid) mode=official " +
+                    "host=\(url.host ?? "unknown") backups=\(backupUrls.count)"
+                )
                 beginOfficialPlayback(generation: token, automaticFallback: false)
             } else if Self.knownEncryptedPids.contains(channel.pid) {
+                logPlayback(
+                    "live_info pid=\(channel.pid) mode=official-known " +
+                    "host=\(url.host ?? "unknown") backups=\(backupUrls.count)"
+                )
                 beginOfficialPlayback(generation: token, automaticFallback: false)
             } else {
+                logPlayback(
+                    "live_info pid=\(channel.pid) mode=native " +
+                    "host=\(url.host ?? "unknown") backups=\(backupUrls.count)"
+                )
                 startNativePlayback(url: url, generation: token)
             }
 
@@ -402,7 +418,12 @@ final class PlaybackController: NSObject, ObservableObject {
             if width > 0, height > 0 {
                 officialHasVideoFrame = true
             }
+            logPlayback(
+                "playing backup=\(playingBackup) width=\(width) " +
+                "height=\(height) hasFrame=\(officialHasVideoFrame)"
+            )
             if officialHasVideoFrame {
+                hasVisibleVideo = true
                 isPreparing = false
                 isBuffering = false
                 status = playingBackup ? "直播中 · 备用线路" : "直播中"
@@ -422,6 +443,9 @@ final class PlaybackController: NSObject, ObservableObject {
             }
             isBuffering = true
             status = "缓冲中…"
+            logPlayback(
+                "buffering backup=\(playingBackup) visible=\(hasVisibleVideo)"
+            )
 
         case "video_size":
             guard renderMode == .official else { return }
@@ -435,10 +459,29 @@ final class PlaybackController: NSObject, ObservableObject {
             if width > 0, height > 0 {
                 officialHasVideoFrame = true
                 officialLastProgressAt = Date()
+                hasVisibleVideo = true
                 isPreparing = false
                 isBuffering = false
                 status = playingBackup ? "直播中 · 备用线路" : "直播中"
             }
+
+        case "video_progress":
+            guard renderMode == .official else { return }
+            if let reportedBackup = boolValue(object["backup"]),
+               playingBackup,
+               !reportedBackup {
+                return
+            }
+            let width = (object["width"] as? NSNumber)?.intValue ?? 0
+            let height = (object["height"] as? NSNumber)?.intValue ?? 0
+            guard width > 0, height > 0 else { return }
+            officialHasVideoFrame = true
+            officialPlaying = true
+            officialLastProgressAt = Date()
+            hasVisibleVideo = true
+            isPreparing = false
+            isBuffering = false
+            status = playingBackup ? "直播中 · 备用线路" : "直播中"
 
         case "playback_error":
             let message = object["message"] as? String ?? "官方播放器返回错误。"
@@ -841,6 +884,9 @@ final class PlaybackController: NSObject, ObservableObject {
         status = isBackup
             ? "正在起播备用线路…"
             : "正在起播 · \(currentChannel?.channelName ?? "直播")"
+        logPlayback(
+            "native start backup=\(isBackup) host=\(url.host ?? "unknown")"
+        )
 
         let headers: [String: String] = [
             "Referer": "https://yangshipin.cn/",
@@ -965,6 +1011,7 @@ final class PlaybackController: NSObject, ObservableObject {
         lastProgressAt = Date()
         if !hasRenderedFrame {
             hasRenderedFrame = true
+            hasVisibleVideo = true
             isPreparing = false
             isBuffering = false
             status = playingBackup ? "直播中 · 备用线路" : "直播中"
@@ -1036,6 +1083,10 @@ final class PlaybackController: NSObject, ObservableObject {
 
         case .official:
             if pendingChannel != nil { return }
+            if officialProbeInFlight,
+               Date().timeIntervalSince(officialProbeStartedAt) >= 3 {
+                officialProbeInFlight = false
+            }
             if !officialProbeInFlight {
                 probeOfficialState(generation: token)
             }
@@ -1063,6 +1114,10 @@ final class PlaybackController: NSObject, ObservableObject {
         lastWatchdogActionAt = Date()
         officialLastProgressAt = Date()
         isBuffering = true
+        logPlayback(
+            "official stall startup=\(startup) backup=\(playingBackup) " +
+            "attempt=\(officialRecoveryAttempts) visible=\(hasVisibleVideo)"
+        )
 
         if officialRecoveryAttempts == 0 {
             requestOfficialRecovery(generation: token)
@@ -1186,6 +1241,10 @@ final class PlaybackController: NSObject, ObservableObject {
         status = automaticFallback
             ? "正在切换兼容播放器…"
             : "正在启动官方播放器…"
+        logPlayback(
+            "official start automatic=\(automaticFallback) " +
+            "backup=\(playingBackup)"
+        )
         webView.evaluateJavaScript(
             "window.__yspStopBackupPlayer && window.__yspStopBackupPlayer();"
         ) { _, _ in }
@@ -1228,6 +1287,9 @@ final class PlaybackController: NSObject, ObservableObject {
         officialRecoveryAttempts = 0
         officialHealthySince = nil
         status = "正在切换央视备用线路 · \(reason)"
+        logPlayback(
+            "cctv fallback start reason=\(safeLogReason(reason))"
+        )
         startWatchdog(generation: token)
 
         var request = URLRequest(url: url)
@@ -1343,6 +1405,9 @@ final class PlaybackController: NSObject, ObservableObject {
         officialLastProgressAt = Date()
         isBuffering = true
         status = "正在恢复直播…"
+        logPlayback(
+            "official recovery attempt=\(officialRecoveryAttempts)"
+        )
         let script = """
         (function () {
           try {
@@ -1362,6 +1427,7 @@ final class PlaybackController: NSObject, ObservableObject {
     private func probeOfficialState(generation token: Int) {
         guard token == generation, renderMode == .official else { return }
         officialProbeInFlight = true
+        officialProbeStartedAt = Date()
         let script = """
         (function () {
           try {
@@ -1431,6 +1497,7 @@ final class PlaybackController: NSObject, ObservableObject {
                     self.officialPlaying = true
                     self.officialLastProgressAt = Date()
                     if self.officialHasVideoFrame {
+                        self.hasVisibleVideo = true
                         self.isPreparing = false
                         self.isBuffering = false
                         self.status = self.playingBackup
@@ -1520,6 +1587,7 @@ final class PlaybackController: NSObject, ObservableObject {
         pendingChannel = nil
         isPreparing = false
         isBuffering = false
+        hasVisibleVideo = false
         status = title
         errorMessage = message
         tearDownNativePlayer()
@@ -1560,7 +1628,7 @@ final class PlaybackController: NSObject, ObservableObject {
             with: "<url>",
             options: .regularExpression
         )
-        print("[YspPlayback] \(safe)")
+        NSLog("[YspPlayback] %@", safe)
     }
 
     private func safeLogReason(_ message: String) -> String {
