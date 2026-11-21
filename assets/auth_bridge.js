@@ -13,6 +13,9 @@
   var requestedPid = "";
   var lastVideoWidth = 0;
   var lastVideoHeight = 0;
+  var nextVideoId = 0;
+  var backupVideo = null;
+  var backupHls = null;
 
   function requestedPidFromLocation() {
     try {
@@ -95,6 +98,13 @@
   }
 
   function findOfficialVideo() {
+    if (
+      window.__yspBackupActive &&
+      backupVideo &&
+      backupVideo.isConnected
+    ) {
+      return backupVideo;
+    }
     var videos = document.querySelectorAll("video");
     if (!videos.length) return null;
     var best = null;
@@ -112,19 +122,62 @@
     return best || videos[0];
   }
 
-  function reportVideoSize(video) {
-    if (nativeOwnsStream || !video) return;
+  function videoIdentity(video) {
+    if (!video) return "";
+    if (!video.__yspHostVideoId) {
+      nextVideoId += 1;
+      video.__yspHostVideoId = "v" + nextVideoId;
+    }
+    return video.__yspHostVideoId;
+  }
+
+  function isBackupMedia(video) {
+    return Boolean(
+      window.__yspBackupActive && backupVideo && video === backupVideo
+    );
+  }
+
+  function isStaleOfficialMedia(video) {
+    return Boolean(
+      window.__yspBackupActive && backupVideo && video !== backupVideo
+    );
+  }
+
+  function videoDimensions(video) {
+    if (!video) return null;
     var width = Number(video.videoWidth || 0);
     var height = Number(video.videoHeight || 0);
     if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
-      return;
+      return null;
     }
-    width = Math.round(width);
-    height = Math.round(height);
-    if (width === lastVideoWidth && height === lastVideoHeight) return;
+    return {
+      width: Math.round(width),
+      height: Math.round(height),
+    };
+  }
+
+  function reportVideoSize(video, force) {
+    if (nativeOwnsStream || !video || isStaleOfficialMedia(video)) return null;
+    var dimensions = videoDimensions(video);
+    if (!dimensions) return null;
+    var width = dimensions.width;
+    var height = dimensions.height;
+    if (
+      !force &&
+      width === lastVideoWidth &&
+      height === lastVideoHeight
+    ) {
+      return dimensions;
+    }
     lastVideoWidth = width;
     lastVideoHeight = height;
-    post({ type: "video_size", width: width, height: height });
+    post({
+      type: "video_size",
+      width: width,
+      height: height,
+      backup: isBackupMedia(video),
+    });
+    return dimensions;
   }
 
   function focusOfficialVideo(force) {
@@ -202,8 +255,37 @@
       livepid: livePid || null,
       encrypt: body.encrypt == null ? null : body.encrypt,
       formats: simplifyFormats(body.formats),
+      backupurls: backupUrlsFrom(body),
     });
 
+  }
+
+  function backupUrlsFrom(body) {
+    var list = body && body.backurl_list;
+    if (!Array.isArray(list)) return [];
+    var result = [];
+    for (var index = 0; index < list.length; index += 1) {
+      var item = list[index];
+      var candidate =
+        typeof item === "string"
+          ? item
+          : item && typeof item.url === "string"
+            ? item.url
+            : "";
+      if (!candidate) continue;
+      try {
+        var parsed = new URL(candidate, location.href);
+        if (
+          parsed.protocol !== "https:" ||
+          !parsed.pathname.toLowerCase().endsWith(".m3u8")
+        ) {
+          continue;
+        }
+        if (result.indexOf(parsed.href) < 0) result.push(parsed.href);
+      } catch (_) {}
+      if (result.length >= 4) break;
+    }
+    return result;
   }
 
   function parseMaybeJson(text) {
@@ -321,6 +403,7 @@
     function (event) {
       var target = event && event.target;
       if (target && String(target.tagName || "").toUpperCase() === "VIDEO") {
+        if (isStaleOfficialMedia(target)) return;
         reportVideoSize(target);
       }
     },
@@ -331,7 +414,17 @@
     "playing",
     function (event) {
       var target = event && event.target;
-      if (target && String(target.tagName || "").toUpperCase() === "VIDEO") {
+      if (
+        target &&
+        String(target.tagName || "").toUpperCase() === "VIDEO"
+      ) {
+        if (window.__yspBackupActive && target !== backupVideo) {
+          try {
+            target.muted = true;
+            target.pause();
+          } catch (_) {}
+          return;
+        }
         reportVideoSize(target);
       }
     },
@@ -359,6 +452,131 @@
       });
     } catch (_) {}
   }
+
+  function stopBackupPlayback() {
+    if (backupHls) {
+      try {
+        backupHls.destroy();
+      } catch (_) {}
+      backupHls = null;
+    }
+    if (backupVideo) {
+      try {
+        backupVideo.pause();
+        backupVideo.removeAttribute("src");
+        backupVideo.load();
+        backupVideo.remove();
+      } catch (_) {}
+      backupVideo = null;
+    }
+    window.__yspBackupActive = false;
+    lastVideoWidth = 0;
+    lastVideoHeight = 0;
+    var app = document.getElementById("app");
+    if (app) {
+      app.style.setProperty("display", "block", "important");
+      window.dispatchEvent(new Event("resize"));
+    }
+  }
+
+  window.__yspStopBackupPlayer = function () {
+    stopBackupPlayback();
+    return true;
+  };
+
+  window.__yspPlayBackupUrl = function (raw) {
+    if (nativeOwnsStream) return false;
+    var source = String(raw || "");
+    try {
+      var parsed = new URL(source, location.href);
+      if (
+        parsed.protocol !== "https:" ||
+        !parsed.pathname.toLowerCase().endsWith(".m3u8")
+      ) {
+        return false;
+      }
+    } catch (_) {
+      return false;
+    }
+
+    stopBackupPlayback();
+    silenceOfficialPlayback();
+    try {
+      document.querySelectorAll("video,audio").forEach(function (candidate) {
+        candidate.muted = true;
+        candidate.pause();
+      });
+    } catch (_) {}
+
+    var video = document.createElement("video");
+    video.id = "yspBackupVideo";
+    video.autoplay = true;
+    video.playsInline = true;
+    video.controls = false;
+    video.muted = false;
+    video.volume = 1;
+    video.style.setProperty("position", "fixed", "important");
+    video.style.setProperty("inset", "0", "important");
+    video.style.setProperty("width", "100vw", "important");
+    video.style.setProperty("height", "100vh", "important");
+    video.style.setProperty("background", "#000", "important");
+    video.style.setProperty("z-index", "2147483647", "important");
+    video.style.setProperty("object-fit", "contain", "important");
+    video.style.setProperty("display", "block", "important");
+    video.addEventListener("error", function () {
+      var code = video.error ? Number(video.error.code || 0) : 0;
+      post({
+        type: "playback_error",
+        backup: true,
+        message: "备用线路 video error " + code,
+      });
+    });
+    document.body.appendChild(video);
+    backupVideo = video;
+    window.__yspBackupActive = true;
+    document.documentElement.style.setProperty("background", "#000", "important");
+    document.body.style.setProperty("margin", "0", "important");
+    document.body.style.setProperty("overflow", "hidden", "important");
+    document.body.style.setProperty("background", "#000", "important");
+
+    if (window.Hls && window.Hls.isSupported()) {
+      var hls = new window.Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        liveSyncDurationCount: 3,
+        maxBufferLength: 30,
+        backBufferLength: 30,
+      });
+      backupHls = hls;
+      hls.on(window.Hls.Events.ERROR, function (_, data) {
+        if (!data || !data.fatal) return;
+        post({
+          type: "playback_error",
+          backup: true,
+          message: "备用线路 HLS " + String(data.details || data.type || "错误"),
+        });
+      });
+      hls.on(window.Hls.Events.MANIFEST_PARSED, function () {
+        try {
+          var playResult = video.play();
+          if (playResult && typeof playResult.catch === "function") {
+            playResult.catch(function () {});
+          }
+        } catch (_) {}
+      });
+      hls.attachMedia(video);
+      hls.loadSource(source);
+    } else {
+      video.src = source;
+      try {
+        var playResult = video.play();
+        if (playResult && typeof playResult.catch === "function") {
+          playResult.catch(function () {});
+        }
+      } catch (_) {}
+    }
+    return true;
+  };
 
   window.__yspPauseOfficialVideo = function () {
     silenceOfficialPlayback();
@@ -388,6 +606,7 @@
   };
 
   window.__yspUseOfficialPlayer = function () {
+    stopBackupPlayback();
     nativeOwnsStream = false;
     stopNudge();
     var video = findOfficialVideo();
@@ -430,6 +649,7 @@
         }
       : null;
     return JSON.stringify({
+      videoId: videoIdentity(video),
       paused: Boolean(video.paused),
       readyState: Number(video.readyState || 0),
       networkState: Number(video.networkState || 0),
@@ -460,9 +680,22 @@
       if (nativeOwnsStream) return;
       var target = event.target;
       if (!target || !/^(VIDEO|AUDIO)$/.test(target.tagName)) return;
+      if (window.__yspBackupActive && target !== backupVideo) {
+        try {
+          target.muted = true;
+          target.pause();
+        } catch (_) {}
+        return;
+      }
       stopNudge();
       focusOfficialVideo(false);
-      post({ type: "playing" });
+      var dimensions = reportVideoSize(target, true);
+      post({
+        type: "playing",
+        width: dimensions ? dimensions.width : 0,
+        height: dimensions ? dimensions.height : 0,
+        backup: isBackupMedia(target),
+      });
     },
     true,
   );
@@ -473,7 +706,20 @@
       if (nativeOwnsStream) return;
       var target = event.target;
       if (!target || target.tagName !== "VIDEO") return;
-      post({ type: "buffering" });
+      if (window.__yspBackupActive && target !== backupVideo) {
+        try {
+          target.muted = true;
+          target.pause();
+        } catch (_) {}
+        return;
+      }
+      var dimensions = videoDimensions(target);
+      post({
+        type: "buffering",
+        width: dimensions ? dimensions.width : 0,
+        height: dimensions ? dimensions.height : 0,
+        backup: isBackupMedia(target),
+      });
     },
     true,
   );
@@ -484,9 +730,11 @@
       if (nativeOwnsStream) return;
       var target = event && event.target;
       if (!target || target.tagName !== "VIDEO") return;
+      if (window.__yspBackupActive && target !== backupVideo) return;
       var code = target.error ? target.error.code : 0;
       post({
         type: "playback_error",
+        backup: isBackupMedia(target),
         message: "video error " + String(code),
       });
     },
@@ -495,7 +743,10 @@
 
   window.__yspSetNativeMode = function (enabled) {
     nativeOwnsStream = Boolean(enabled);
-    if (nativeOwnsStream) silenceOfficialPlayback();
+    if (nativeOwnsStream) {
+      stopBackupPlayback();
+      silenceOfficialPlayback();
+    }
   };
 
   function prepareChannelSwitch(pid) {
@@ -505,6 +756,7 @@
     lastPid = "";
     lastDefn = "";
     focusedVideo = null;
+    stopBackupPlayback();
     silenceOfficialPlayback();
     startNudge();
   }
@@ -583,6 +835,7 @@
   window.__yspApplyLiveQuality = function (definition) {
     var target = String(definition || "");
     if (!target) return false;
+    stopBackupPlayback();
     var pid = requestedPid || requestedPidFromLocation();
     var vm = findLiveQualityPlayer(pid);
     if (!vm) return false;

@@ -16,6 +16,7 @@ final class PlaybackController: NSObject, ObservableObject {
     let webView: WKWebView
 
     private static let bridgeName = "yspBridge"
+    private static let cctvWebFallbackEnabled = false
     private static let knownEncryptedPids: Set<String> = [
         "600002493",
         "600002309",
@@ -25,6 +26,31 @@ final class PlaybackController: NSObject, ObservableObject {
     // player payload and HLS streams.
     private static let userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    private static let cctvUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 26_4 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 " +
+        "Mobile/15E148 Safari/604.1"
+    private static let cctvPagePaths: [String: String] = [
+        "CCTV1": "cctv1",
+        "CCTV2": "cctv2",
+        "CCTV3": "cctv3",
+        "CCTV4": "cctv4",
+        "CCTV5": "cctv5",
+        "CCTV5+": "cctv5plus",
+        "CCTV6": "cctv6",
+        "CCTV7": "cctv7",
+        "CCTV8": "cctv8",
+        "CCTV9": "cctvjilu",
+        "CCTV10": "cctv10",
+        "CCTV11": "cctv11",
+        "CCTV12": "cctv12",
+        "CCTV13": "cctv13",
+        "CCTV14": "cctvchild",
+        "CCTV15": "cctv15",
+        "CCTV16-HD": "cctv16",
+        "CCTV16(4K)": "cctv16",
+        "CCTV17": "cctv17"
+    ]
 
     private enum RenderMode {
         case idle
@@ -36,6 +62,8 @@ final class PlaybackController: NSObject, ObservableObject {
     private var generation = 0
     private var pendingChannel: Channel?
     private var authTimeoutTask: Task<Void, Never>?
+    private var fallbackRetryTask: Task<Void, Never>?
+    private var fallbackRetryAttempts = 0
     private var watchdogTimer: Timer?
     private var watchdogStartedAt = Date()
     private var lastWatchdogActionAt = Date.distantPast
@@ -49,12 +77,22 @@ final class PlaybackController: NSObject, ObservableObject {
     private var lastProgressAt = Date.distantPast
     private var nativeRecoveryAttempts = 0
     private var usedOfficialFallback = false
+    private var cctvFallbackUsed = false
+    private var playingCctvFallback = false
     private var officialStartedAt = Date()
     private var officialPlaying = false
     private var officialProbeInFlight = false
     private var officialLastPosition = 0.0
+    private var officialVideoId: String?
     private var officialLastProgressAt = Date.distantPast
     private var officialRecoveryAttempts = 0
+    private var officialHealthySince: Date?
+    private var qualityLadder: [QualityOption] = []
+    private var qualityIndex = -1
+    private var backupUrls: [URL] = []
+    private var backupIndex = 0
+    private var playingBackup = false
+    private var officialHasVideoFrame = false
     private var isForeground = true
     private var backgroundedAt: Date?
 
@@ -120,6 +158,7 @@ final class PlaybackController: NSObject, ObservableObject {
 
     deinit {
         authTimeoutTask?.cancel()
+        fallbackRetryTask?.cancel()
         watchdogTimer?.invalidate()
         itemStatusObservation?.invalidate()
         timeControlObservation?.invalidate()
@@ -144,6 +183,8 @@ final class PlaybackController: NSObject, ObservableObject {
         let token = generation
         authTimeoutTask?.cancel()
         authTimeoutTask = nil
+        fallbackRetryTask?.cancel()
+        fallbackRetryTask = nil
         stopWatchdog()
         tearDownNativePlayer()
 
@@ -151,6 +192,11 @@ final class PlaybackController: NSObject, ObservableObject {
         pendingChannel = channel
         renderMode = .idle
         usesOfficialPlayer = false
+        playingCctvFallback = false
+        backupUrls = []
+        backupIndex = 0
+        playingBackup = false
+        officialHasVideoFrame = false
         isPreparing = true
         isBuffering = false
         errorMessage = nil
@@ -162,10 +208,21 @@ final class PlaybackController: NSObject, ObservableObject {
         officialProbeInFlight = false
         webView.isHidden = false
         webView.alpha = 0.01
+        webView.customUserAgent = Self.userAgent
+        configureAudioSession()
+        webView.evaluateJavaScript(
+            "window.__yspStopBackupPlayer && window.__yspStopBackupPlayer();"
+        ) { _, _ in }
         if resetRecovery {
             nativeRecoveryAttempts = 0
             usedOfficialFallback = false
+            cctvFallbackUsed = false
+            playingCctvFallback = false
             officialRecoveryAttempts = 0
+            officialHealthySince = nil
+            officialVideoId = nil
+            qualityLadder = []
+            qualityIndex = -1
         }
 
         guard let url = URL(string: "https://yangshipin.cn/tv/home?pid=\(channel.pid)") else {
@@ -209,11 +266,18 @@ final class PlaybackController: NSObject, ObservableObject {
         generation &+= 1
         authTimeoutTask?.cancel()
         authTimeoutTask = nil
+        fallbackRetryTask?.cancel()
+        fallbackRetryTask = nil
         stopWatchdog()
         tearDownNativePlayer()
         pendingChannel = nil
         renderMode = .idle
         usesOfficialPlayer = false
+        playingCctvFallback = false
+        backupUrls = []
+        backupIndex = 0
+        playingBackup = false
+        officialHasVideoFrame = false
         isPreparing = false
         isBuffering = false
         hasRenderedFrame = false
@@ -295,8 +359,20 @@ final class PlaybackController: NSObject, ObservableObject {
                livePid != channel.pid {
                 return
             }
+            backupUrls = backupURLs(in: object, excluding: url)
+            backupIndex = 0
+            playingBackup = false
+            officialHasVideoFrame = false
+            officialPlaying = false
+            officialRecoveryAttempts = 0
+            officialHealthySince = nil
+            lastWatchdogActionAt = .distantPast
             let token = generation
             let encryption = encryptionFlag(in: object)
+            updateQualityLadder(
+                formats: object["formats"] as? [[String: Any]],
+                currentDefinition: stringValue(object["defn"])
+            )
             pendingChannel = nil
             authTimeoutTask?.cancel()
             authTimeoutTask = nil
@@ -310,28 +386,74 @@ final class PlaybackController: NSObject, ObservableObject {
 
         case "playing":
             guard renderMode == .official else { return }
+            if let reportedBackup = boolValue(object["backup"]) {
+                if playingBackup, !reportedBackup {
+                    return
+                }
+                playingBackup = reportedBackup
+            }
+            fallbackRetryTask?.cancel()
+            fallbackRetryTask = nil
+            fallbackRetryAttempts = 0
             officialPlaying = true
             officialLastProgressAt = Date()
-            isPreparing = false
-            isBuffering = false
-            status = "直播中"
+            let width = (object["width"] as? NSNumber)?.intValue ?? 0
+            let height = (object["height"] as? NSNumber)?.intValue ?? 0
+            if width > 0, height > 0 {
+                officialHasVideoFrame = true
+            }
+            if officialHasVideoFrame {
+                isPreparing = false
+                isBuffering = false
+                status = playingBackup ? "直播中 · 备用线路" : "直播中"
+            } else {
+                isBuffering = true
+                status = playingBackup
+                    ? "备用线路已起播，等待画面…"
+                    : "视频已起播，等待画面…"
+            }
 
         case "buffering":
             guard renderMode == .official else { return }
+            if let reportedBackup = boolValue(object["backup"]),
+               playingBackup,
+               !reportedBackup {
+                return
+            }
             isBuffering = true
             status = "缓冲中…"
 
         case "video_size":
             guard renderMode == .official else { return }
+            if let reportedBackup = boolValue(object["backup"]),
+               playingBackup,
+               !reportedBackup {
+                return
+            }
             let width = (object["width"] as? NSNumber)?.intValue ?? 0
             let height = (object["height"] as? NSNumber)?.intValue ?? 0
             if width > 0, height > 0 {
+                officialHasVideoFrame = true
                 officialLastProgressAt = Date()
+                isPreparing = false
+                isBuffering = false
+                status = playingBackup ? "直播中 · 备用线路" : "直播中"
             }
 
         case "playback_error":
             let message = object["message"] as? String ?? "官方播放器返回错误。"
+            if let reportedBackup = boolValue(object["backup"]),
+               playingBackup,
+               !reportedBackup {
+                return
+            }
             if renderMode == .official || isPreparing {
+                if tryNextBackup(
+                    generation: generation,
+                    reason: message
+                ) {
+                    return
+                }
                 failPlayback(title: "播放失败", message: message)
             }
 
@@ -364,20 +486,361 @@ final class PlaybackController: NSObject, ObservableObject {
         return sawEncryption ? 0 : nil
     }
 
-    private func startNativePlayback(url: URL, generation token: Int) {
+    private func backupURLs(
+        in object: [String: Any],
+        excluding primary: URL
+    ) -> [URL] {
+        guard let values = object["backupurls"] as? [String] else {
+            return []
+        }
+        var seen = Set([primary.absoluteString])
+        var result: [URL] = []
+        for value in values {
+            guard result.count < 4 else { break }
+            guard
+                let url = URL(string: value),
+                url.scheme?.lowercased() == "https",
+                !url.path.isEmpty,
+                url.path.lowercased().hasSuffix(".m3u8"),
+                url.host?.isEmpty == false
+            else {
+                continue
+            }
+            if seen.insert(url.absoluteString).inserted {
+                result.append(url)
+            }
+        }
+        return result
+    }
+
+    private func updateQualityLadder(
+        formats: [[String: Any]]?,
+        currentDefinition: String?
+    ) {
+        guard let formats, !formats.isEmpty else {
+            qualityLadder = []
+            qualityIndex = -1
+            return
+        }
+        var options: [(ordinal: Int, option: QualityOption)] = []
+        for (ordinal, format) in formats.enumerated() {
+            let fn = stringValue(format["fn"])
+            guard !fn.isEmpty, fn.lowercased() != "audio" else { continue }
+            let fnName = stringValue(format["fnname"])
+            let defnName = stringValue(format["defnname"])
+            let defnRate = stringValue(format["defnrate"])
+            if fnName.lowercased().contains("audio") ||
+                defnName.lowercased().contains("audio") {
+                continue
+            }
+            let label = [fnName, defnName, defnRate, fn].first { !$0.isEmpty } ?? fn
+            let score = [fn, fnName, defnName, defnRate].map(qualityScore).max() ?? 0
+            options.append((ordinal, QualityOption(fn: fn, label: label, score: score)))
+        }
+        options.sort {
+            if $0.option.score != $1.option.score {
+                return $0.option.score > $1.option.score
+            }
+            return $0.ordinal > $1.ordinal
+        }
+        var seen = Set<String>()
+        qualityLadder = options.compactMap { item in
+            seen.insert(item.option.fn).inserted ? item.option : nil
+        }
+        qualityIndex = qualityLadder.firstIndex {
+            $0.fn == (currentDefinition ?? "")
+        } ?? (qualityLadder.isEmpty ? -1 : 0)
+    }
+
+    private func stringValue(_ value: Any?) -> String {
+        if let value = value as? String { return value.trimmingCharacters(in: .whitespaces) }
+        if let value = value as? NSNumber { return value.stringValue }
+        return ""
+    }
+
+    private func boolValue(_ value: Any?) -> Bool? {
+        if let value = value as? NSNumber { return value.boolValue }
+        if let value = value as? Bool { return value }
+        return nil
+    }
+
+    private func qualityScore(_ raw: String) -> Int {
+        if raw.isEmpty { return 0 }
+        let lower = raw.lowercased()
+        var best = 0
+        if lower.contains("8k") {
+            best = 4320
+        } else if lower.contains("4k") || lower.contains("2160") {
+            best = 2160
+        } else if lower.contains("2k") || lower.contains("1440") {
+            best = 1440
+        }
+        for token in lower.components(separatedBy: CharacterSet.decimalDigits.inverted) {
+            guard let value = Int(token), (240...4320).contains(value) else { continue }
+            best = max(best, value)
+        }
+        if best == 0 {
+            if lower.contains("蓝光") {
+                best = 1080
+            } else if lower.contains("超清") {
+                best = 720
+            } else if lower.contains("高清") {
+                best = 480
+            } else if lower.contains("标清") {
+                best = 360
+            }
+        }
+        if best == 0 {
+            switch lower.trimmingCharacters(in: .whitespaces) {
+            case "uhd8", "8k": best = 4320
+            case "uhd", "4k": best = 2160
+            case "qhd", "2k": best = 1440
+            case "fhd": best = 1080
+            case "shd": best = 720
+            case "hd": best = 540
+            case "sd": best = 360
+            default: break
+            }
+        }
+        return best
+    }
+
+    private func requestLowerOfficialQuality(generation token: Int) -> Bool {
+        guard
+            token == generation,
+            renderMode == .official,
+            !playingCctvFallback
+        else {
+            return false
+        }
+        let next = qualityIndex + 1
+        guard next >= 0, next < qualityLadder.count else { return false }
+        qualityIndex = next
+        let option = qualityLadder[next]
+        guard
+            let data = try? JSONSerialization.data(
+                withJSONObject: [option.fn],
+                options: []
+            ),
+            let encoded = String(data: data, encoding: .utf8),
+            encoded.hasPrefix("["),
+            encoded.hasSuffix("]")
+        else {
+            return false
+        }
+        let quoted = String(encoded.dropFirst().dropLast())
+        pendingChannel = currentChannel
+        usesOfficialPlayer = true
+        webView.isHidden = false
+        webView.alpha = 1
+        playingBackup = false
+        officialHasVideoFrame = false
+        officialPlaying = false
+        officialProbeInFlight = false
+        officialStartedAt = Date()
+        officialLastProgressAt = Date()
+        officialLastPosition = 0
+        officialVideoId = nil
+        officialHealthySince = nil
+        isPreparing = true
+        isBuffering = true
+        status = "正在降低清晰度 · \(option.label)"
+        authTimeoutTask?.cancel()
+        if let channel = currentChannel {
+            authTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard
+                        let self,
+                        token == self.generation,
+                        self.renderMode == .official,
+                        self.pendingChannel?.pid == channel.pid,
+                        !self.playingCctvFallback
+                    else {
+                        return
+                    }
+                    self.authTimeoutTask = nil
+                    self.pendingChannel = nil
+                    self.qualityIndex = self.qualityLadder.count
+                    self.officialRecoveryAttempts = 0
+                    self.lastWatchdogActionAt = .distantPast
+                    self.officialLastProgressAt = .distantPast
+                    self.isBuffering = true
+                    self.status = "清晰度切换超时，正在恢复…"
+                }
+            }
+        }
+        let script = """
+        (function () {
+          try {
+            return Boolean(
+              window.__yspApplyLiveQuality &&
+              window.__yspApplyLiveQuality(\(quoted))
+            );
+          } catch (_) {
+            return false;
+          }
+        })();
+        """
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            DispatchQueue.main.async {
+                guard let self, token == self.generation else { return }
+                let accepted = (result as? Bool)
+                    ?? (result as? NSNumber)?.boolValue
+                    ?? false
+                if !accepted {
+                    self.pendingChannel = nil
+                    self.qualityIndex = self.qualityLadder.count
+                    self.officialLastProgressAt = Date.distantPast
+                }
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    private func tryNextBackup(generation token: Int, reason: String) -> Bool {
+        guard
+            token == generation,
+            !playingCctvFallback,
+            backupIndex >= 0,
+            backupIndex < backupUrls.count,
+            renderMode == .official || renderMode == .native
+        else {
+            return false
+        }
+        let url = backupUrls[backupIndex]
+        backupIndex += 1
+        playingBackup = true
+        configureAudioSession()
+        lastWatchdogActionAt = Date()
+        lastProgressAt = Date()
+        officialLastProgressAt = Date()
+        logPlayback(
+            "backup \(backupIndex)/\(backupUrls.count) host=\(hostLabel(url)) " +
+            "reason=\(safeLogReason(reason))"
+        )
+
+        if renderMode == .native {
+            startNativePlayback(
+                url: url,
+                generation: token,
+                isBackup: true
+            )
+            return true
+        }
+
+        pendingChannel = nil
+        usesOfficialPlayer = true
+        webView.isHidden = false
+        webView.alpha = 1
+        isPreparing = true
+        isBuffering = false
+        hasRenderedFrame = false
+        officialHasVideoFrame = false
+        officialPlaying = false
+        officialProbeInFlight = false
+        officialStartedAt = Date()
+        officialLastProgressAt = Date()
+        officialLastPosition = 0
+        officialVideoId = nil
+        officialHealthySince = nil
+        status = "正在切换备用线路…"
+        startWatchdog(generation: token)
+
+        guard
+            let data = try? JSONSerialization.data(
+                withJSONObject: [url.absoluteString],
+                options: []
+            ),
+            let encoded = String(data: data, encoding: .utf8),
+            encoded.hasPrefix("["),
+            encoded.hasSuffix("]")
+        else {
+            playingBackup = false
+            return false
+        }
+        let quoted = String(encoded.dropFirst().dropLast())
+        let script = """
+        (function () {
+          try {
+            window.__yspSetNativeMode && window.__yspSetNativeMode(false);
+            return Boolean(
+              window.__yspPlayBackupUrl &&
+              window.__yspPlayBackupUrl(\(quoted))
+            );
+          } catch (_) {
+            return false;
+          }
+        })();
+        """
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            DispatchQueue.main.async {
+                guard let self, token == self.generation else { return }
+                let accepted = (result as? Bool)
+                    ?? (result as? NSNumber)?.boolValue
+                    ?? false
+                if accepted {
+                    self.status = "正在起播备用线路…"
+                    return
+                }
+                self.logPlayback(
+                    "backup \(self.backupIndex)/\(self.backupUrls.count) " +
+                    "was rejected by the page"
+                )
+                self.playingBackup = false
+                if !self.tryNextBackup(
+                    generation: token,
+                    reason: "备用线路启动失败"
+                ) {
+                    self.failPlayback(
+                        title: "备用线路不可用",
+                        message: "备用线路未能启动，请重新连接。"
+                    )
+                }
+            }
+        }
+        return true
+    }
+
+    private func cctvFallbackURL(for channel: Channel) -> URL? {
+        guard Self.cctvWebFallbackEnabled else { return nil }
+        guard channel.group == .cctv else { return nil }
+        let name = channel.channelName
+            .uppercased()
+            .replacingOccurrences(of: "＋", with: "+")
+            .replacingOccurrences(of: "（", with: "(")
+            .replacingOccurrences(of: "）", with: ")")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "－", with: "-")
+        guard let path = Self.cctvPagePaths[name] else { return nil }
+        return URL(string: "https://tv.cctv.com/live/\(path)/m/")
+    }
+
+    private func startNativePlayback(
+        url: URL,
+        generation token: Int,
+        isBackup: Bool = false
+    ) {
         guard token == generation else { return }
         authTimeoutTask?.cancel()
         authTimeoutTask = nil
+        tearDownNativePlayer()
         renderMode = .native
         usesOfficialPlayer = false
+        playingBackup = isBackup
         webView.isHidden = true
         webView.alpha = 0.01
         isPreparing = true
         isBuffering = false
         hasRenderedFrame = false
+        officialHasVideoFrame = false
         lastObservedTime = .invalid
         lastProgressAt = Date()
-        status = "正在起播 · \(currentChannel?.channelName ?? "直播")"
+        status = isBackup
+            ? "正在起播备用线路…"
+            : "正在起播 · \(currentChannel?.channelName ?? "直播")"
 
         let headers: [String: String] = [
             "Referer": "https://yangshipin.cn/",
@@ -388,7 +851,8 @@ final class PlaybackController: NSObject, ObservableObject {
             options: ["AVURLAssetHTTPHeaderFieldsKey": headers]
         )
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 2
+        item.preferredForwardBufferDuration = 6
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         let newPlayer = AVPlayer(playerItem: item)
         newPlayer.automaticallyWaitsToMinimizeStalling = true
         player = newPlayer
@@ -433,16 +897,15 @@ final class PlaybackController: NSObject, ObservableObject {
                 if self.isBuffering {
                     self.status = "缓冲中…"
                 } else if self.hasRenderedFrame {
-                    self.status = "直播中"
+                    self.status = self.playingBackup
+                        ? "直播中 · 备用线路"
+                        : "直播中"
                 }
             }
         }
 
         addNativeTimeObserver(to: newPlayer, generation: token)
         configureAudioSession()
-        newPlayer.playImmediately(atRate: 1)
-        startWatchdog(generation: token)
-
         webView.evaluateJavaScript(
             """
             (function () {
@@ -453,6 +916,8 @@ final class PlaybackController: NSObject, ObservableObject {
             })();
             """
         ) { _, _ in }
+        newPlayer.playImmediately(atRate: 1)
+        startWatchdog(generation: token)
     }
 
     private func addNativeTimeObserver(to player: AVPlayer, generation token: Int) {
@@ -502,9 +967,9 @@ final class PlaybackController: NSObject, ObservableObject {
             hasRenderedFrame = true
             isPreparing = false
             isBuffering = false
-            status = "直播中"
+            status = playingBackup ? "直播中 · 备用线路" : "直播中"
         } else if !isBuffering {
-            status = "直播中"
+            status = playingBackup ? "直播中 · 备用线路" : "直播中"
         }
         if nativeRecoveryAttempts > 0,
            Date().timeIntervalSince(lastWatchdogActionAt) >= 10 {
@@ -542,6 +1007,13 @@ final class PlaybackController: NSObject, ObservableObject {
         case .native:
             let elapsed = Date().timeIntervalSince(watchdogStartedAt)
             if !hasRenderedFrame, elapsed >= 10 {
+                if !playingBackup,
+                   tryNextBackup(
+                       generation: token,
+                       reason: "原生主线路起播超时"
+                   ) {
+                    return
+                }
                 if !usedOfficialFallback {
                     usedOfficialFallback = true
                     beginOfficialPlayback(generation: token, automaticFallback: true)
@@ -563,32 +1035,67 @@ final class PlaybackController: NSObject, ObservableObject {
             }
 
         case .official:
+            if pendingChannel != nil { return }
             if !officialProbeInFlight {
                 probeOfficialState(generation: token)
             }
             let elapsed = Date().timeIntervalSince(officialStartedAt)
             let stalledFor = Date().timeIntervalSince(officialLastProgressAt)
             let cooldown = Date().timeIntervalSince(lastWatchdogActionAt)
-            if !officialPlaying, elapsed >= 12, cooldown >= 5 {
-                if officialRecoveryAttempts == 0 {
-                    requestOfficialRecovery(generation: token)
-                } else {
-                    failPlayback(
-                        title: "官方播放器启动超时",
-                        message: "官方加密播放器未能出帧。请检查网络后重新连接。"
-                    )
-                }
-            } else if officialPlaying, stalledFor >= 4, cooldown >= 4 {
-                if officialRecoveryAttempts < 2 {
-                    requestOfficialRecovery(generation: token)
-                } else {
-                    failPlayback(
-                        title: "直播已停滞",
-                        message: "官方播放器连续 4 秒没有推进，已停止自动恢复。请重新连接。"
-                    )
-                }
+            let startupThreshold: TimeInterval = playingCctvFallback
+                ? 30
+                : (playingBackup ? 18 : 10)
+            let stallThreshold: TimeInterval = playingCctvFallback
+                ? 18
+                : (playingBackup ? 18 : 6)
+            if (!officialPlaying || !officialHasVideoFrame),
+               elapsed >= startupThreshold,
+               cooldown >= 4 {
+                recoverOfficialStall(generation: token, startup: true)
+            } else if officialPlaying, stalledFor >= stallThreshold, cooldown >= 6 {
+                recoverOfficialStall(generation: token, startup: false)
             }
         }
+    }
+
+    private func recoverOfficialStall(generation token: Int, startup: Bool) {
+        guard token == generation, renderMode == .official else { return }
+        lastWatchdogActionAt = Date()
+        officialLastProgressAt = Date()
+        isBuffering = true
+
+        if officialRecoveryAttempts == 0 {
+            requestOfficialRecovery(generation: token)
+            return
+        }
+        if !playingCctvFallback,
+           tryNextBackup(
+               generation: token,
+               reason: startup ? "主线路起播超时" : "主线路持续卡顿"
+           ) {
+            officialRecoveryAttempts = 0
+            return
+        }
+        if !playingCctvFallback,
+           officialRecoveryAttempts == 1,
+           requestLowerOfficialQuality(generation: token) {
+            officialRecoveryAttempts += 1
+            return
+        }
+        if !playingCctvFallback,
+           let channel = currentChannel,
+           beginCctvFallback(for: channel, reason: startup ? "主线路起播超时" : "主线路持续卡顿") {
+            officialRecoveryAttempts = 0
+            return
+        }
+        if officialRecoveryAttempts < 2 {
+            requestOfficialRecovery(generation: token)
+            return
+        }
+        failPlayback(
+            title: playingCctvFallback ? "央视备选线路已停滞" : "直播已停滞",
+            message: "播放器连续多秒没有推进，已停止自动恢复。请重新连接。"
+        )
     }
 
     private func recoverNativeStall(generation token: Int) {
@@ -602,8 +1109,19 @@ final class PlaybackController: NSObject, ObservableObject {
             status = "正在恢复直播…"
             seekToLiveEdge()
         } else if nativeRecoveryAttempts == 2, let channel = currentChannel {
+            if tryNextBackup(
+                generation: token,
+                reason: "原生播放持续卡顿"
+            ) {
+                return
+            }
             status = "正在重新连接…"
             beginPlay(channel, resetRecovery: false)
+        } else if nativeRecoveryAttempts == 3,
+                  !usedOfficialFallback {
+            usedOfficialFallback = true
+            beginOfficialPlayback(generation: token, automaticFallback: true)
+            return
         } else {
             failPlayback(
                 title: "播放已停滞",
@@ -645,21 +1163,137 @@ final class PlaybackController: NSObject, ObservableObject {
         tearDownNativePlayer()
         renderMode = .official
         usesOfficialPlayer = true
+        playingCctvFallback = false
+        playingBackup = false
+        webView.customUserAgent = Self.userAgent
         webView.isHidden = false
         webView.alpha = 1
         isPreparing = true
         isBuffering = false
         hasRenderedFrame = false
+        officialHasVideoFrame = false
         officialPlaying = false
         officialProbeInFlight = false
         officialStartedAt = Date()
         officialLastProgressAt = Date()
         officialLastPosition = 0
+        officialVideoId = nil
+        officialHealthySince = nil
+        if automaticFallback {
+            officialRecoveryAttempts = 0
+        }
+        configureAudioSession()
         status = automaticFallback
             ? "正在切换兼容播放器…"
             : "正在启动官方播放器…"
+        webView.evaluateJavaScript(
+            "window.__yspStopBackupPlayer && window.__yspStopBackupPlayer();"
+        ) { _, _ in }
         startWatchdog(generation: token)
         resumeOfficialVideo(generation: token, retries: 6)
+    }
+
+    @discardableResult
+    private func beginCctvFallback(for channel: Channel, reason: String) -> Bool {
+        guard Self.cctvWebFallbackEnabled else { return false }
+        guard !cctvFallbackUsed else { return false }
+        guard let url = cctvFallbackURL(for: channel) else { return false }
+        let token = generation
+        cctvFallbackUsed = true
+        playingCctvFallback = true
+        fallbackRetryTask?.cancel()
+        fallbackRetryTask = nil
+        fallbackRetryAttempts = 0
+        authTimeoutTask?.cancel()
+        authTimeoutTask = nil
+        pendingChannel = nil
+        stopWatchdog()
+        tearDownNativePlayer()
+        renderMode = .official
+        usesOfficialPlayer = true
+        webView.customUserAgent = Self.cctvUserAgent
+        webView.isHidden = false
+        webView.alpha = 1
+        isPreparing = true
+        isBuffering = false
+        errorMessage = nil
+        hasRenderedFrame = false
+        officialHasVideoFrame = false
+        officialPlaying = false
+        officialProbeInFlight = false
+        officialStartedAt = Date()
+        officialLastProgressAt = Date()
+        officialLastPosition = 0
+        officialVideoId = nil
+        officialRecoveryAttempts = 0
+        officialHealthySince = nil
+        status = "正在切换央视备用线路 · \(reason)"
+        startWatchdog(generation: token)
+
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(Self.cctvUserAgent, forHTTPHeaderField: "User-Agent")
+        webView.load(request)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard
+                let self,
+                token == self.generation,
+                self.playingCctvFallback,
+                self.renderMode == .official,
+                self.isPreparing
+            else {
+                return
+            }
+            self.resumeOfficialVideo(generation: token, retries: 10)
+        }
+        status = "正在切换央视备用线路 · \(reason)"
+        return true
+    }
+
+    private func scheduleCctvPageRetry(reason: String) {
+        guard playingCctvFallback, let channel = currentChannel else { return }
+        fallbackRetryTask?.cancel()
+        if fallbackRetryAttempts >= 8 {
+            failPlayback(
+                title: "央视备选线路未恢复",
+                message: "连续重连央视备用线路仍失败，请检查网络后手动重试。"
+            )
+            return
+        }
+        fallbackRetryAttempts += 1
+        let attempt = fallbackRetryAttempts
+        let token = generation
+        let pid = channel.pid
+        isPreparing = true
+        isBuffering = true
+        status = "\(reason)，正在重连 \(attempt)/8"
+        fallbackRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard
+                    let self,
+                    token == self.generation,
+                    self.playingCctvFallback,
+                    self.currentChannel?.pid == pid,
+                    let url = self.currentChannel.flatMap({
+                        self.cctvFallbackURL(for: $0)
+                    })
+                else {
+                    return
+                }
+                self.fallbackRetryTask = nil
+                self.status = "正在重连央视备用线路 \(attempt)/8"
+                var request = URLRequest(url: url)
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                request.setValue(
+                    Self.cctvUserAgent,
+                    forHTTPHeaderField: "User-Agent"
+                )
+                self.webView.load(request)
+            }
+        }
     }
 
     private func resumeOfficialVideo(generation token: Int, retries: Int) {
@@ -704,6 +1338,7 @@ final class PlaybackController: NSObject, ObservableObject {
     private func requestOfficialRecovery(generation token: Int) {
         guard token == generation, renderMode == .official else { return }
         officialRecoveryAttempts += 1
+        officialHealthySince = nil
         lastWatchdogActionAt = Date()
         officialLastProgressAt = Date()
         isBuffering = true
@@ -767,14 +1402,57 @@ final class PlaybackController: NSObject, ObservableObject {
                 }
                 let paused = (state["paused"] as? NSNumber)?.boolValue ?? true
                 let current = (state["currentTime"] as? NSNumber)?.doubleValue ?? 0
+                let width = (state["videoWidth"] as? NSNumber)?.intValue ?? 0
+                let height = (state["videoHeight"] as? NSNumber)?.intValue ?? 0
+                if width > 0, height > 0 {
+                    self.officialHasVideoFrame = true
+                }
+                let videoId = state["videoId"] as? String
+                let videoChanged =
+                    videoId?.isEmpty == false &&
+                    self.officialVideoId?.isEmpty == false &&
+                    videoId != self.officialVideoId
+                if let videoId, !videoId.isEmpty {
+                    self.officialVideoId = videoId
+                }
+                if videoChanged {
+                    self.officialHasVideoFrame = false
+                    self.officialLastPosition = current
+                    self.officialLastProgressAt = Date()
+                    self.isPreparing = true
+                    self.isBuffering = true
+                    self.status = self.playingBackup
+                        ? "备用线路已切换，等待画面…"
+                        : "播放器已切换，等待画面…"
+                    return
+                }
                 guard !paused, current.isFinite else { return }
                 if current > self.officialLastPosition + 0.04 {
                     self.officialPlaying = true
-                    self.isPreparing = false
-                    self.isBuffering = false
-                    self.status = "直播中"
                     self.officialLastProgressAt = Date()
-                    self.officialRecoveryAttempts = 0
+                    if self.officialHasVideoFrame {
+                        self.isPreparing = false
+                        self.isBuffering = false
+                        self.status = self.playingBackup
+                            ? "直播中 · 备用线路"
+                            : "直播中"
+                    } else {
+                        self.isBuffering = true
+                        self.status = self.playingBackup
+                            ? "备用线路已起播，等待画面…"
+                            : "视频已起播，等待画面…"
+                    }
+                    if self.officialHasVideoFrame {
+                        if let healthySince = self.officialHealthySince {
+                            if Date().timeIntervalSince(healthySince) >= 20 {
+                                self.officialRecoveryAttempts = 0
+                            }
+                        } else {
+                            self.officialHealthySince = Date()
+                        }
+                    }
+                } else if current < self.officialLastPosition - 1 {
+                    self.officialLastProgressAt = Date()
                 }
                 self.officialLastPosition = current
             }
@@ -816,8 +1494,28 @@ final class PlaybackController: NSObject, ObservableObject {
     }
 
     private func failPlayback(title: String, message: String) {
+        if !playingCctvFallback,
+           tryNextBackup(
+               generation: generation,
+               reason: "\(title)：\(message)"
+           ) {
+            return
+        }
+        if renderMode == .native,
+           !usedOfficialFallback {
+            usedOfficialFallback = true
+            beginOfficialPlayback(generation: generation, automaticFallback: true)
+            return
+        }
+        if !cctvFallbackUsed,
+           let channel = currentChannel,
+           beginCctvFallback(for: channel, reason: "\(title)：\(message)") {
+            return
+        }
         authTimeoutTask?.cancel()
         authTimeoutTask = nil
+        fallbackRetryTask?.cancel()
+        fallbackRetryTask = nil
         stopWatchdog()
         pendingChannel = nil
         isPreparing = false
@@ -856,6 +1554,28 @@ final class PlaybackController: NSObject, ObservableObject {
         try? session.setActive(true)
     }
 
+    private func logPlayback(_ message: String) {
+        let safe = message.replacingOccurrences(
+            of: #"https?://[^\s]+"#,
+            with: "<url>",
+            options: .regularExpression
+        )
+        print("[YspPlayback] \(safe)")
+    }
+
+    private func safeLogReason(_ message: String) -> String {
+        let safe = message.replacingOccurrences(
+            of: #"https?://[^\s]+"#,
+            with: "<url>",
+            options: .regularExpression
+        )
+        return String(safe.prefix(160))
+    }
+
+    private func hostLabel(_ url: URL) -> String {
+        url.host ?? "unknown"
+    }
+
     @objc private func handleItemFailure(_ notification: Notification) {
         guard
             let item = notification.object as? AVPlayerItem,
@@ -875,6 +1595,12 @@ final class PlaybackController: NSObject, ObservableObject {
     }
 }
 
+private struct QualityOption {
+    let fn: String
+    let label: String
+    let score: Int
+}
+
 extension PlaybackController: WKScriptMessageHandler {
     func userContentController(
         _ userContentController: WKUserContentController,
@@ -888,6 +1614,18 @@ extension PlaybackController: WKScriptMessageHandler {
 }
 
 extension PlaybackController: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard
+            renderMode == .official,
+            playingCctvFallback,
+            isPreparing
+        else {
+            return
+        }
+        status = "央视备选页已加载，正在启动播放…"
+        resumeOfficialVideo(generation: generation, retries: 10)
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -906,6 +1644,12 @@ extension PlaybackController: WKNavigationDelegate {
         withError error: Error
     ) {
         guard isPreparing || usesOfficialPlayer else { return }
+        if playingCctvFallback {
+            scheduleCctvPageRetry(
+                reason: "央视备选网络中断：\(error.localizedDescription)"
+            )
+            return
+        }
         failPlayback(
             title: "鉴权页加载失败",
             message: "无法加载官方鉴权页：\(error.localizedDescription)"
@@ -914,6 +1658,10 @@ extension PlaybackController: WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard isPreparing || usesOfficialPlayer else { return }
+        if playingCctvFallback {
+            scheduleCctvPageRetry(reason: "央视备选页面已终止")
+            return
+        }
         failPlayback(
             title: "鉴权页已终止",
             message: "官方鉴权页被系统终止，请重新选择频道。"
