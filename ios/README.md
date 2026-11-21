@@ -2,6 +2,9 @@
 
 这是 `ysp-live` 的 iPhone / iPad 原生入口。iOS 端不使用 libmpv：
 
+- 界面与 Android 手机版保持一致：横屏全屏播放，点按画面打开左侧频道列和右侧节目单；
+- 启动时自动播放上次选择的频道，首次启动默认播放天津卫视；
+- 频道切换、节目单日期和 5 秒自动收起行为与 Android 版一致；
 - 隐藏的 `WKWebView` 加载官方 `yangshipin.cn` 播放页；
 - 注入现有 `assets/auth_bridge.js`，通过 `WKScriptMessageHandler` 接收 `live_info`；
 - 收到官方生成的 HTTPS HLS 地址后，交给系统 `AVPlayer` 播放；

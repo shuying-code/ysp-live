@@ -8,7 +8,7 @@ final class PlaybackController: NSObject, ObservableObject {
     @Published private(set) var player: AVPlayer?
     @Published private(set) var status = "选择一个频道开始播放"
     @Published private(set) var isPreparing = false
-    @Published var isFullScreen = false
+    @Published private(set) var isBuffering = false
     @Published var errorMessage: String?
 
     let webView: WKWebView
@@ -22,6 +22,7 @@ final class PlaybackController: NSObject, ObservableObject {
     private var pendingChannel: Channel?
     private var timeoutTask: Task<Void, Never>?
     private var itemStatusObservation: NSKeyValueObservation?
+    private var timeControlObservation: NSKeyValueObservation?
     private var observers: [NSObjectProtocol] = []
 
     override init() {
@@ -64,6 +65,7 @@ final class PlaybackController: NSObject, ObservableObject {
     deinit {
         timeoutTask?.cancel()
         itemStatusObservation?.invalidate()
+        timeControlObservation?.invalidate()
         NotificationCenter.default.removeObserver(self)
         observers.forEach { NotificationCenter.default.removeObserver($0) }
     }
@@ -77,11 +79,13 @@ final class PlaybackController: NSObject, ObservableObject {
         currentChannel = channel
         pendingChannel = channel
         isPreparing = true
-        isFullScreen = true
+        isBuffering = false
         errorMessage = nil
         status = "正在加载官方鉴权页…"
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
+        timeControlObservation?.invalidate()
+        timeControlObservation = nil
         player?.pause()
         player = nil
         timeoutTask?.cancel()
@@ -119,11 +123,13 @@ final class PlaybackController: NSObject, ObservableObject {
         timeoutTask = nil
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
+        timeControlObservation?.invalidate()
+        timeControlObservation = nil
         pendingChannel = nil
         player?.pause()
         player = nil
         isPreparing = false
-        isFullScreen = false
+        isBuffering = false
         status = "选择一个频道开始播放"
         webView.stopLoading()
     }
@@ -215,7 +221,8 @@ final class PlaybackController: NSObject, ObservableObject {
         timeoutTask?.cancel()
         timeoutTask = nil
         pendingChannel = nil
-        isPreparing = false
+        isPreparing = true
+        isBuffering = false
         status = "正在起播 · \(currentChannel?.channelName ?? "直播")"
 
         let headers: [String: String] = [
@@ -237,12 +244,29 @@ final class PlaybackController: NSObject, ObservableObject {
                 guard let self else { return }
                 switch item.status {
                 case .readyToPlay:
+                    self.isPreparing = false
+                    self.isBuffering = false
                     self.status = "直播中"
                 case .failed:
+                    self.isPreparing = false
+                    self.isBuffering = false
                     self.status = "播放失败"
                     self.errorMessage = item.error?.localizedDescription ?? "视频加载失败，请刷新重试。"
                 default:
                     break
+                }
+            }
+        }
+        timeControlObservation?.invalidate()
+        timeControlObservation = newPlayer.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                if self.isBuffering {
+                    self.status = "缓冲中…"
+                } else if player.currentItem?.status == .readyToPlay {
+                    self.isPreparing = false
+                    self.status = "直播中"
                 }
             }
         }
@@ -273,6 +297,8 @@ final class PlaybackController: NSObject, ObservableObject {
             return
         }
         DispatchQueue.main.async {
+            self.isPreparing = false
+            self.isBuffering = false
             self.errorMessage = item.error?.localizedDescription ?? "视频播放失败，请刷新重试。"
             self.status = "播放失败"
         }
