@@ -1,0 +1,64 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Verify bundled iOS resources
+        run: |
+          test -s ios/YspLive/Resources/channels.json
+          test -s ios/YspLive/Resources/auth_bridge.js
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build device app
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project YspLive.xcodeproj \
+            -scheme YspLive \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/YspLive.app"
+          test -d "$APP_PATH"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload YspLive-unsigned.ipa
+          shasum -a 256 YspLive-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ysp-live-ios-unsigned
+          path: ios/YspLive-unsigned.ipa
+          if-no-files-found: error
