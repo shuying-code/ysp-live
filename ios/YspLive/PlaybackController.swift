@@ -160,6 +160,7 @@ final class PlaybackController: NSObject, ObservableObject {
         lastProgressAt = Date()
         officialPlaying = false
         officialProbeInFlight = false
+        webView.isHidden = false
         webView.alpha = 0.01
         if resetRecovery {
             nativeRecoveryAttempts = 0
@@ -217,6 +218,7 @@ final class PlaybackController: NSObject, ObservableObject {
         isBuffering = false
         hasRenderedFrame = false
         status = "选择一个频道开始播放"
+        webView.isHidden = true
         webView.alpha = 0.01
         webView.stopLoading()
         webView.evaluateJavaScript(
@@ -368,6 +370,7 @@ final class PlaybackController: NSObject, ObservableObject {
         authTimeoutTask = nil
         renderMode = .native
         usesOfficialPlayer = false
+        webView.isHidden = true
         webView.alpha = 0.01
         isPreparing = true
         isBuffering = false
@@ -642,6 +645,7 @@ final class PlaybackController: NSObject, ObservableObject {
         tearDownNativePlayer()
         renderMode = .official
         usesOfficialPlayer = true
+        webView.isHidden = false
         webView.alpha = 1
         isPreparing = true
         isBuffering = false
@@ -821,6 +825,7 @@ final class PlaybackController: NSObject, ObservableObject {
         status = title
         errorMessage = message
         tearDownNativePlayer()
+        webView.isHidden = true
         if renderMode == .official {
             webView.evaluateJavaScript(
                 "window.__yspPauseOfficialVideo && window.__yspPauseOfficialVideo();"
