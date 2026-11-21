@@ -89,6 +89,7 @@
         fnname: item && item.fnname,
         defnname: item && item.defnname,
         defnrate: item && item.defnrate,
+        encrypt: item && item.encrypt,
       };
     });
   }
@@ -199,6 +200,7 @@
       playurl: playurl,
       defn: body.defn || null,
       livepid: livePid || null,
+      encrypt: body.encrypt == null ? null : body.encrypt,
       formats: simplifyFormats(body.formats),
     });
 
@@ -288,7 +290,8 @@
     var video = findOfficialVideo();
     if (!video) return;
     try {
-      video.muted = true;
+      video.muted = false;
+      video.volume = 1;
       if (video.paused) {
         var result = video.play();
         if (result && typeof result.catch === "function") result.catch(function () {});
@@ -384,6 +387,59 @@
     return true;
   };
 
+  window.__yspUseOfficialPlayer = function () {
+    nativeOwnsStream = false;
+    stopNudge();
+    var video = findOfficialVideo();
+    if (!video) return false;
+    focusOfficialVideo(true);
+    return window.__yspResumeOfficialVideo();
+  };
+
+  window.__yspRecoverOfficialVideo = function () {
+    nativeOwnsStream = false;
+    var video = findOfficialVideo();
+    if (!video) return false;
+    try {
+      var ranges = video.seekable;
+      if (ranges && ranges.length) {
+        var end = Number(ranges.end(ranges.length - 1));
+        var current = Number(video.currentTime || 0);
+        if (isFinite(end) && end > 0 && end - current > 2) {
+          video.currentTime = Math.max(0, end - 0.35);
+        }
+      }
+      video.muted = false;
+      video.volume = 1;
+      if (video.paused) {
+        var result = video.play();
+        if (result && typeof result.catch === "function") result.catch(function () {});
+      }
+    } catch (_) {}
+    focusOfficialVideo(true);
+    return true;
+  };
+
+  window.__yspGetOfficialState = function () {
+    var video = findOfficialVideo();
+    if (!video) return "";
+    var mediaError = video.error
+      ? {
+          code: Number(video.error.code || 0),
+          message: String(video.error.message || ""),
+        }
+      : null;
+    return JSON.stringify({
+      paused: Boolean(video.paused),
+      readyState: Number(video.readyState || 0),
+      networkState: Number(video.networkState || 0),
+      currentTime: Number(video.currentTime || 0),
+      videoWidth: Number(video.videoWidth || 0),
+      videoHeight: Number(video.videoHeight || 0),
+      error: mediaError,
+    });
+  };
+
   document.addEventListener(
     "play",
     function (event) {
@@ -404,6 +460,7 @@
       if (nativeOwnsStream) return;
       var target = event.target;
       if (!target || !/^(VIDEO|AUDIO)$/.test(target.tagName)) return;
+      stopNudge();
       focusOfficialVideo(false);
       post({ type: "playing" });
     },

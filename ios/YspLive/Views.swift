@@ -33,9 +33,12 @@ struct RootView: View {
                 }
 
                 AuthWebViewContainer(webView: playback.webView)
-                    .frame(width: 1, height: 1)
-                    .opacity(0.01)
-                    .allowsHitTesting(false)
+                    .frame(
+                        width: playback.usesOfficialPlayer ? proxy.size.width : 1,
+                        height: playback.usesOfficialPlayer ? proxy.size.height : 1
+                    )
+                    .opacity(playback.usesOfficialPlayer ? 1 : 0.01)
+                    .allowsHitTesting(playback.usesOfficialPlayer)
 
                 if channels.isEmpty && catalogError == nil {
                     LoadingOverlay(message: "正在读取频道目录…")
