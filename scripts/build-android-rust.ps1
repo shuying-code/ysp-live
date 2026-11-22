@@ -7,7 +7,15 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } elseif ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "C:\Android\Sdk" }
 $ndk = if ($env:ANDROID_NDK_HOME) { $env:ANDROID_NDK_HOME } else { Join-Path $sdk "ndk\26.1.10909125" }
-$toolchain = Join-Path $ndk "toolchains\llvm\prebuilt\windows-x86_64\bin"
+$isWindowsHost = $env:OS -eq "Windows_NT"
+$hostTag = if ($isWindowsHost) {
+    "windows-x86_64"
+} elseif ($IsMacOS) {
+    "darwin-x86_64"
+} else {
+    "linux-x86_64"
+}
+$toolchain = Join-Path $ndk "toolchains/llvm/prebuilt/$hostTag/bin"
 $api = "23"
 
 if (-not (Test-Path $toolchain)) {
@@ -21,17 +29,17 @@ if (-not $env:CARGO_TARGET_DIR) {
 $targets = @{
     "arm64-v8a" = @{
         Target = "aarch64-linux-android"
-        Cc = "aarch64-linux-android$api-clang.cmd"
+        Cc = "aarch64-linux-android$api-clang"
         Env = "aarch64_linux_android"
     }
     "armeabi-v7a" = @{
         Target = "armv7-linux-androideabi"
-        Cc = "armv7a-linux-androideabi$api-clang.cmd"
+        Cc = "armv7a-linux-androideabi$api-clang"
         Env = "armv7_linux_androideabi"
     }
     "x86_64" = @{
         Target = "x86_64-linux-android"
-        Cc = "x86_64-linux-android$api-clang.cmd"
+        Cc = "x86_64-linux-android$api-clang"
         Env = "x86_64_linux_android"
     }
 }
@@ -39,7 +47,10 @@ $targets = @{
 $selected = if ($Abi -eq "all") { $targets.Keys } else { @($Abi) }
 foreach ($name in $selected) {
     $spec = $targets[$name]
-    $compiler = Join-Path $toolchain $spec.Cc
+    $compilerName = if ($isWindowsHost) { "$($spec.Cc).cmd" } else { $spec.Cc }
+    $compiler = Join-Path $toolchain $compilerName
+    $archiverName = if ($isWindowsHost) { "llvm-ar.exe" } else { "llvm-ar" }
+    $archiver = Join-Path $toolchain $archiverName
     if (-not (Test-Path $compiler)) {
         throw "Compiler not found: $compiler"
     }
@@ -49,12 +60,12 @@ foreach ($name in $selected) {
     # variable. Set both so dependencies with C build scripts work too.
     Set-Item -Path "Env:CC_$($spec.Env)" -Value $compiler
     Set-Item -Path "Env:CC_$($spec.Target)" -Value $compiler
-    Set-Item -Path "Env:AR_$($spec.Env)" -Value (Join-Path $toolchain "llvm-ar.exe")
-    Set-Item -Path "Env:AR_$($spec.Target)" -Value (Join-Path $toolchain "llvm-ar.exe")
+    Set-Item -Path "Env:AR_$($spec.Env)" -Value $archiver
+    Set-Item -Path "Env:AR_$($spec.Target)" -Value $archiver
     Set-Item -Path "Env:CARGO_TARGET_$envKey`_LINKER" -Value $compiler
 
     Write-Host "Building Rust JNI for $name ($($spec.Target))"
-    cargo build -p ysp-android-jni --release --target $($spec.Target)
+    cargo build --manifest-path (Join-Path $root "Cargo.toml") -p ysp-android-jni --release --target $($spec.Target)
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed for $name"
     }
