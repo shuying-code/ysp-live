@@ -6,8 +6,12 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } elseif ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "C:\Android\Sdk" }
-$ndk = if ($env:ANDROID_NDK_HOME) { $env:ANDROID_NDK_HOME } else { Join-Path $sdk "ndk\26.1.10909125" }
 $isWindowsHost = $env:OS -eq "Windows_NT"
+$ndk = if ($env:ANDROID_NDK_HOME) {
+    $env:ANDROID_NDK_HOME
+} else {
+    Join-Path (Join-Path $sdk "ndk") "26.1.10909125"
+}
 $hostTag = if ($isWindowsHost) {
     "windows-x86_64"
 } elseif ($IsMacOS) {
@@ -23,7 +27,17 @@ if (-not (Test-Path $toolchain)) {
 }
 
 if (-not $env:CARGO_TARGET_DIR) {
-    $env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA "ysp-live\cargo-target"
+    if ($isWindowsHost) {
+        if (-not $env:LOCALAPPDATA) {
+            throw "LOCALAPPDATA is not set."
+        }
+        $env:CARGO_TARGET_DIR = Join-Path (Join-Path $env:LOCALAPPDATA "ysp-live") "cargo-target"
+    } else {
+        if (-not $HOME) {
+            throw "HOME is not set."
+        }
+        $env:CARGO_TARGET_DIR = Join-Path (Join-Path $HOME ".cache/ysp-live") "cargo-target"
+    }
 }
 
 $targets = @{
@@ -70,8 +84,9 @@ foreach ($name in $selected) {
         throw "cargo build failed for $name"
     }
 
-    $source = Join-Path $env:CARGO_TARGET_DIR "$($spec.Target)\release\libysp_core_android.so"
-    $dest = Join-Path $root "android\app\src\main\jniLibs\$name"
+    $source = Join-Path (Join-Path (Join-Path $env:CARGO_TARGET_DIR $spec.Target) "release") "libysp_core_android.so"
+    $dest = Join-Path (Join-Path (Join-Path (Join-Path $root "android") "app") "src") "main"
+    $dest = Join-Path (Join-Path $dest "jniLibs") $name
     if (-not (Test-Path $source)) {
         throw "Rust shared library not found: $source"
     }
