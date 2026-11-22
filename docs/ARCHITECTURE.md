@@ -1,5 +1,7 @@
 # 架构与执行边界
 
+> 语言分工与选型理由见 [语言与功能模块](LANGUAGE_AND_MODULES.md)。
+
 ## 1. 目标
 
 在 Android TV 和 Android 手机上播放央视频 TV 页面内的央视/卫视直播，同时满足：

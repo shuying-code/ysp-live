@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 README / 功能与构建说明
+    url: https://github.com/shuying-code/ysp-live#readme
+    about: 功能、平台支持、构建命令、已知限制和文档索引
+  - name: 🧭 使用反馈指南
+    url: https://github.com/shuying-code/ysp-live/blob/main/docs/FEEDBACK.md
+    about: 如何提供可复现、已脱敏的高质量反馈
+  - name: 📦 最新版本 / 下载
+    url: https://github.com/shuying-code/ysp-live/releases/latest
+    about: Android APK、iOS IPA 和 SHA-256 校验文件
+  - name: 🔐 安全漏洞私下上报
+    url: https://github.com/shuying-code/ysp-live/security/advisories/new
+    about: 不要在公开 Issue 中披露安全漏洞

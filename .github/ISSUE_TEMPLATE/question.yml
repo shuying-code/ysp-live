@@ -1,0 +1,58 @@
+name: ❓ 使用咨询
+description: 安装、签名、构建、配置或一般使用问题
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提问前请先查看 [README](https://github.com/shuying-code/ysp-live/blob/main/README.md) 和 [使用反馈指南](https://github.com/shuying-code/ysp-live/blob/main/docs/FEEDBACK.md)。
+
+        如果是可复现的 Bug，请改用「Bug / 播放问题」模板。
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      options:
+        - Android 手机
+        - Android TV
+        - iPhone / iPad
+        - Windows 桌面原型
+        - 源码构建 / CI
+        - 其它
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / commit
+      placeholder: "v0.1.0 (4a6542d)"
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已尝试的方法
+      description: 查阅过的文档、执行过的命令、看到的报错
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图 / 脱敏日志 / 相关链接
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认事项
+      options:
+        - label: 我已搜索现有 Issue 和文档，未找到答案
+          required: true
+        - label: 我没有提交完整播放地址、token、Cookie 或 Apple ID
+          required: true
