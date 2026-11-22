@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/shuying-code/ysp-live/actions/workflows/android.yml"><img alt="Android Build" src="https://github.com/shuying-code/ysp-live/actions/workflows/android.yml/badge.svg"></a>
   <a href="https://github.com/shuying-code/ysp-live/actions/workflows/ios.yml"><img alt="iOS Build" src="https://github.com/shuying-code/ysp-live/actions/workflows/ios.yml/badge.svg"></a>
+  <a href="https://github.com/shuying-code/ysp-live/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/shuying-code/ysp-live/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/shuying-code/ysp-live/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/shuying-code/ysp-live?color=blue"></a>
   <img alt="Android" src="https://img.shields.io/badge/Android-6.0%2B-3DDC84?logo=android&logoColor=white">
   <img alt="iOS" src="https://img.shields.io/badge/iOS-17.0%2B-000000?logo=apple&logoColor=white">
@@ -263,7 +264,7 @@ ysp-live/
 ├─ scripts/                     构建、运行、原生库下载与检查
 ├─ .github/
 │  ├─ ISSUE_TEMPLATE/           Bug、功能建议、使用咨询模板
-│  ├─ workflows/                iOS 构建与后续 CI
+│  ├─ workflows/                Android / iOS 构建与 Rust / JavaScript CI
 │  └─ PULL_REQUEST_TEMPLATE.md
 ├─ CHANGELOG.md
 ├─ CONTRIBUTING.md
