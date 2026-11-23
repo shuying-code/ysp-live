@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.text.TextUtils
+import android.text.format.DateFormat
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -44,6 +45,7 @@ import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.core.os.ConfigurationCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.ysp.live.NativeCore
@@ -55,7 +57,9 @@ import com.ysp.live.data.Channel
 import com.ysp.live.data.ChannelRepository
 import com.ysp.live.data.EpgProgram
 import com.ysp.live.data.EpgRepository
+import com.ysp.live.playback.NotificationChannels
 import com.ysp.live.playback.PlaybackService
+import com.ysp.live.playback.PlaybackStatusText
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -139,6 +143,7 @@ abstract class BaseLiveActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        NotificationChannels.ensure(this)
         requestedOrientation = if (tvMode) {
             ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         } else {
@@ -570,7 +575,7 @@ abstract class BaseLiveActivity : Activity() {
 
         guideAdapter = EpgAdapter(tvMode)
         guideTitle = TextView(this).apply {
-            text = "节目单 · 今天"
+            text = getString(R.string.guide_title_today)
             setTextColor(0xFF90CAF9.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, if (tvMode) 16f else 13f)
             isFocusable = false
@@ -585,7 +590,7 @@ abstract class BaseLiveActivity : Activity() {
             isFocusable = false
         }
         guideStatus = TextView(this).apply {
-            text = "正在加载节目单…"
+            text = getString(R.string.guide_loading)
             setTextColor(0xFFB0BEC5.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, if (tvMode) 17f else 14f)
             gravity = Gravity.CENTER
@@ -1114,7 +1119,7 @@ abstract class BaseLiveActivity : Activity() {
 
     private fun showLoadingOverlay(message: String, showProgress: Boolean = true) {
         if (!::loadingOverlay.isInitialized) return
-        statusView.text = message
+        statusView.text = PlaybackStatusText.forDisplay(this, message)
         loadingIndicator.visibility = if (showProgress) View.VISIBLE else View.GONE
         loadingOverlay.visibility = View.VISIBLE
         if (!::drawer.isInitialized || drawer.visibility != View.VISIBLE) {
@@ -1206,9 +1211,13 @@ abstract class BaseLiveActivity : Activity() {
     private fun showGuideLoading(channel: Channel) {
         if (!::guideTitle.isInitialized) return
         val date = currentGuideDate()
-        guideTitle.text = "节目单 · 今天"
-        guideSubtitle.text = "${channel.name} · ${formatGuideDate(date)}"
-        guideStatus.text = "正在加载节目单…"
+        guideTitle.text = getString(R.string.guide_title_today)
+        guideSubtitle.text = getString(
+            R.string.guide_subtitle,
+            channel.name,
+            formatGuideDate(date),
+        )
+        guideStatus.text = getString(R.string.guide_loading)
         guideStatus.visibility = View.VISIBLE
         guideList.visibility = View.GONE
         guideAdapter.setPrograms(emptyList())
@@ -1229,10 +1238,13 @@ abstract class BaseLiveActivity : Activity() {
                 result.fold(
                     onSuccess = { programs ->
                         guideAdapter.setPrograms(programs)
-                        guideSubtitle.text =
-                            "${channel.name} · ${formatGuideDate(date)}"
+                        guideSubtitle.text = getString(
+                            R.string.guide_subtitle,
+                            channel.name,
+                            formatGuideDate(date),
+                        )
                         if (programs.isEmpty()) {
-                            guideStatus.text = "今天暂无节目单"
+                            guideStatus.text = getString(R.string.guide_empty_today)
                             guideStatus.visibility = View.VISIBLE
                             guideList.visibility = View.GONE
                         } else {
@@ -1244,7 +1256,7 @@ abstract class BaseLiveActivity : Activity() {
                         }
                     },
                     onFailure = {
-                        guideStatus.text = "节目单加载失败\n点按重试"
+                        guideStatus.text = getString(R.string.guide_load_failed)
                         guideStatus.visibility = View.VISIBLE
                         guideList.visibility = View.GONE
                     },
@@ -1262,7 +1274,12 @@ abstract class BaseLiveActivity : Activity() {
         val parser = SimpleDateFormat("yyyyMMdd", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("Asia/Shanghai")
         }
-        val formatter = SimpleDateFormat("M月d日 EEEE", Locale.CHINA).apply {
+        val locale = ConfigurationCompat.getLocales(resources.configuration)[0]
+            ?: Locale.getDefault()
+        val formatter = SimpleDateFormat(
+            DateFormat.getBestDateTimePattern(locale, "MMMdEEEE"),
+            locale,
+        ).apply {
             timeZone = TimeZone.getTimeZone("Asia/Shanghai")
         }
         formatter.format(parser.parse(date) ?: Date())

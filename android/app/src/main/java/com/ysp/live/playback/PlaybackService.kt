@@ -44,7 +44,7 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
 
     var currentPid: String? = null
         private set
-    var currentTitle: String = "等待播放"
+    var currentTitle: String = ""
         private set
     var statusListener: ((String) -> Unit)? = null
     var endedListener: (() -> Unit)? = null
@@ -56,7 +56,8 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
         super.onCreate()
         NotificationChannels.ensure(this)
         player = LibMpvPlayer(this, this)
-        val notificationText = "正在准备 libmpv"
+        if (currentTitle.isBlank()) currentTitle = getString(R.string.live)
+        val notificationText = getString(R.string.notification_preparing_mpv)
         lastNotificationText = notificationText
         startForegroundCompat(buildNotification(notificationText))
         player.start()
@@ -66,13 +67,13 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
         when (intent?.action) {
             ACTION_PLAY -> {
                 val url = intent.getStringExtra(EXTRA_URL)
-                val title = intent.getStringExtra(EXTRA_TITLE) ?: "直播"
+                val title = intent.getStringExtra(EXTRA_TITLE) ?: getString(R.string.live)
                 val pid = intent.getStringExtra(EXTRA_PID)
                 if (!url.isNullOrBlank()) {
                     play(url, title, pid)
                 }
             }
-            ACTION_WAITING -> updateNotification("等待从应用发起播放")
+            ACTION_WAITING -> updateNotification(getString(R.string.notification_waiting_for_app))
             ACTION_STOP_PLAYBACK -> stopPlayback()
             ACTION_STOP_SERVICE -> {
                 stopPlayback()
@@ -87,7 +88,7 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
     fun play(url: String, title: String, pid: String?) {
         currentPid = pid
         currentTitle = title
-        updateNotification("正在连接 $title")
+        updateNotification(getString(R.string.notification_connecting, title))
         player.play(url, title, pid)
     }
 
@@ -110,18 +111,18 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
     fun stopPlayback() {
         if (::player.isInitialized) player.stop()
         currentPid = null
-        currentTitle = "已停止"
-        updateNotification("播放已停止")
+        currentTitle = getString(R.string.notification_playback_stopped)
+        updateNotification(getString(R.string.notification_playback_stopped))
     }
 
     override fun onStatus(text: String) {
-        updateNotification(text)
+        updateNotification(PlaybackStatusText.forDisplay(this, text))
         mainHandler.post { statusListener?.invoke(text) }
     }
 
     override fun onEnded() {
         currentPid = null
-        updateNotification("播放结束 · 可重新鉴权")
+        updateNotification(getString(R.string.notification_playback_ended))
         mainHandler.post {
             statusListener?.invoke("播放结束，可重新鉴权")
             endedListener?.invoke()
@@ -131,7 +132,12 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
     override fun onError(text: String) {
         Log.w(TAG, "libmpv: $text")
         currentPid = null
-        updateNotification("播放错误 · $text")
+        updateNotification(
+            getString(
+                R.string.notification_playback_error,
+                PlaybackStatusText.forDisplay(this, text),
+            )
+        )
         mainHandler.post {
             statusListener?.invoke("播放错误：$text")
             endedListener?.invoke()
@@ -176,7 +182,11 @@ class PlaybackService : Service(), LibMpvPlayer.Listener {
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .addAction(android.R.drawable.ic_media_pause, "停止", stopServiceIntent)
+            .addAction(
+                android.R.drawable.ic_media_pause,
+                getString(R.string.notification_stop),
+                stopServiceIntent,
+            )
             .build()
     }
 

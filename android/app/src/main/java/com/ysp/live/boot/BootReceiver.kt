@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.ysp.live.R
 import com.ysp.live.playback.NotificationChannels
 import com.ysp.live.playback.PlaybackService
 import com.ysp.live.ui.LaunchTarget
@@ -48,7 +49,7 @@ class BootReceiver : BroadcastReceiver() {
         if (!activityStarted && !serviceStarted) {
             NotificationChannels.postBootNotice(
                 context,
-                "点击打开 YSP Live。系统限制了后台自启，可授予自启/后台权限后重试。",
+                context.getString(R.string.notification_boot_fallback),
             )
         }
     }

@@ -23,13 +23,13 @@ enum EpgError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "节目单地址无效"
+            return L10n.t("epg.invalid_url")
         case .invalidResponse:
-            return "节目单响应无效"
+            return L10n.t("epg.invalid_response")
         case .httpStatus(let status):
-            return "节目单请求失败：HTTP \(status)"
+            return L10n.t("epg.http_status", status)
         case .malformedData:
-            return "节目单数据解析失败"
+            return L10n.t("epg.malformed")
         }
     }
 }
@@ -81,9 +81,9 @@ enum EpgDate {
 
     static func todayLabel() -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = L10n.locale
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "M月d日 EEEE"
+        formatter.setLocalizedDateFormatFromTemplate("MMMdEEEE")
         return formatter.string(from: Date())
     }
 }

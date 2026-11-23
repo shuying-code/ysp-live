@@ -66,6 +66,7 @@
 - **连续切台与恢复**：官方页面内调用 `changeTV()` 切台；切台时暂停旧播放器、隔离旧回调；播放失败或播放 URL 过期时重新鉴权。
 - **CCTV 备选线路**：主流 CCTV 频道在主源 10 秒未起播或明确失败时，可切换央视网直播页作为备选；其他频道不受影响。
 - **后台与常驻播放**：Android 使用 `mediaPlayback` 前台服务与媒体通知；iOS 开启后台音频模式，并由 AVPlayer 管理音频会话。
+- **多语言界面**：Android 与 iOS 界面跟随系统语言，支持 English、简体中文、繁體中文、日本語、한국어、Español、Français、Deutsch、Português (Brasil)、Русский；频道名和节目内容保留官方源语言，Android 13+ 支持分应用语言。
 - **可选 Kiosk**：`kiosk` 变体增加 HOME activity-alias，适合专用电视/默认桌面场景；普通安装包不会静默修改系统设置。
 - **最小化敏感数据**：播放 URL 只保存在进程内；日志、通知不输出完整 query；不写 SharedPreferences，不做崩溃上报。
 - **iOS 原生入口**：SwiftUI 界面、隐藏 WKWebView 鉴权、AVPlayer 播放、EPG 与前后台恢复；不打包 libmpv。

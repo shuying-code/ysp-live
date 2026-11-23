@@ -1,8 +1,8 @@
 import Foundation
 
 enum ChannelGroup: String, CaseIterable, Identifiable {
-    case cctv = "央视"
-    case satellite = "卫视"
+    case cctv
+    case satellite
 
     var id: String { rawValue }
 }
@@ -28,7 +28,7 @@ struct Channel: Identifiable, Decodable, Hashable {
 
     var badge: String? {
         if isLimitedFree == true {
-            return "限免"
+            return L10n.t("channel.limited_free")
         }
         if is4K == true {
             return "4K"
@@ -43,7 +43,7 @@ enum ChannelCatalog {
             throw NSError(
                 domain: "YspLive",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "App 内缺少 channels.json"]
+                userInfo: [NSLocalizedDescriptionKey: L10n.t("catalog.missing_file")]
             )
         }
         let data = try Data(contentsOf: url)

@@ -7,7 +7,7 @@ import WebKit
 final class PlaybackController: NSObject, ObservableObject {
     @Published private(set) var currentChannel: Channel?
     @Published private(set) var player: AVPlayer?
-    @Published private(set) var status = "选择一个频道开始播放"
+    @Published private(set) var status = L10n.t("playback.initial_status")
     @Published private(set) var isPreparing = false
     @Published private(set) var isBuffering = false
     @Published private(set) var hasVisibleVideo = false
@@ -132,7 +132,7 @@ final class PlaybackController: NSObject, ObservableObject {
             ) { [weak self] _ in
                 guard let self, self.renderMode == .native else { return }
                 self.isBuffering = true
-                self.status = "缓冲中…"
+                self.status = L10n.t("status.buffering")
             }
         )
         observers.append(
@@ -177,7 +177,7 @@ final class PlaybackController: NSObject, ObservableObject {
 
     private func beginPlay(_ channel: Channel, resetRecovery: Bool) {
         guard !channel.pid.isEmpty else {
-            errorMessage = "频道缺少 pid，无法播放。"
+            errorMessage = L10n.t("error.channel_missing_pid")
             return
         }
 
@@ -203,7 +203,7 @@ final class PlaybackController: NSObject, ObservableObject {
         isBuffering = false
         hasVisibleVideo = false
         errorMessage = nil
-        status = "正在加载官方鉴权页…"
+        status = L10n.t("status.auth_loading")
         hasRenderedFrame = false
         lastObservedTime = .invalid
         lastProgressAt = Date()
@@ -230,7 +230,7 @@ final class PlaybackController: NSObject, ObservableObject {
 
         guard let url = URL(string: "https://yangshipin.cn/tv/home?pid=\(channel.pid)") else {
             isPreparing = false
-            errorMessage = "频道地址无效。"
+            errorMessage = L10n.t("error.channel_invalid_url")
             return
         }
         var request = URLRequest(url: url)
@@ -252,8 +252,8 @@ final class PlaybackController: NSObject, ObservableObject {
                     return
                 }
                 self.failPlayback(
-                    title: "取流超时",
-                    message: "官方播放器 20 秒内没有返回播放地址。请检查网络，或换一个频道重试。"
+                    title: L10n.t("title.auth_timeout"),
+                    message: L10n.t("msg.auth_timeout")
                 )
             }
         }
@@ -285,7 +285,7 @@ final class PlaybackController: NSObject, ObservableObject {
         isBuffering = false
         hasVisibleVideo = false
         hasRenderedFrame = false
-        status = "选择一个频道开始播放"
+        status = L10n.t("playback.initial_status")
         webView.isHidden = true
         webView.alpha = 0.01
         webView.stopLoading()
@@ -341,7 +341,7 @@ final class PlaybackController: NSObject, ObservableObject {
         switch type {
         case "bridge_ready":
             if isPreparing, renderMode == .idle {
-                status = "官方页面已加载，等待鉴权结果…"
+                status = L10n.t("status.official_loaded")
             }
 
         case "live_info":
@@ -353,8 +353,8 @@ final class PlaybackController: NSObject, ObservableObject {
                 url.path.lowercased().hasSuffix(".m3u8")
             else {
                 failPlayback(
-                    title: "取流失败",
-                    message: "官方返回的播放地址无效。"
+                    title: L10n.t("title.stream_failed"),
+                    message: L10n.t("msg.invalid_stream")
                 )
                 return
             }
@@ -426,12 +426,14 @@ final class PlaybackController: NSObject, ObservableObject {
                 hasVisibleVideo = true
                 isPreparing = false
                 isBuffering = false
-                status = playingBackup ? "直播中 · 备用线路" : "直播中"
+                status = playingBackup
+                    ? L10n.t("status.playing_backup")
+                    : L10n.t("status.playing")
             } else {
                 isBuffering = true
                 status = playingBackup
-                    ? "备用线路已起播，等待画面…"
-                    : "视频已起播，等待画面…"
+                    ? L10n.t("status.backup_started_waiting")
+                    : L10n.t("status.video_started_waiting")
             }
 
         case "buffering":
@@ -442,7 +444,7 @@ final class PlaybackController: NSObject, ObservableObject {
                 return
             }
             isBuffering = true
-            status = "缓冲中…"
+            status = L10n.t("status.buffering")
             logPlayback(
                 "buffering backup=\(playingBackup) visible=\(hasVisibleVideo)"
             )
@@ -462,7 +464,9 @@ final class PlaybackController: NSObject, ObservableObject {
                 hasVisibleVideo = true
                 isPreparing = false
                 isBuffering = false
-                status = playingBackup ? "直播中 · 备用线路" : "直播中"
+                status = playingBackup
+                    ? L10n.t("status.playing_backup")
+                    : L10n.t("status.playing")
             }
 
         case "video_progress":
@@ -481,10 +485,12 @@ final class PlaybackController: NSObject, ObservableObject {
             hasVisibleVideo = true
             isPreparing = false
             isBuffering = false
-            status = playingBackup ? "直播中 · 备用线路" : "直播中"
+            status = playingBackup
+                ? L10n.t("status.playing_backup")
+                : L10n.t("status.playing")
 
         case "playback_error":
-            let message = object["message"] as? String ?? "官方播放器返回错误。"
+            let message = object["message"] as? String ?? L10n.t("msg.official_error")
             if let reportedBackup = boolValue(object["backup"]),
                playingBackup,
                !reportedBackup {
@@ -497,12 +503,14 @@ final class PlaybackController: NSObject, ObservableObject {
                 ) {
                     return
                 }
-                failPlayback(title: "播放失败", message: message)
+                failPlayback(title: L10n.t("title.playback_failed"), message: message)
             }
 
         case "error":
-            let message = object["message"] as? String ?? "官方播放器返回错误。"
-            if isPreparing { failPlayback(title: "取流失败", message: message) }
+            let message = object["message"] as? String ?? L10n.t("msg.official_error")
+            if isPreparing {
+                failPlayback(title: L10n.t("title.stream_failed"), message: message)
+            }
 
         default:
             break
@@ -687,7 +695,10 @@ final class PlaybackController: NSObject, ObservableObject {
         officialHealthySince = nil
         isPreparing = true
         isBuffering = true
-        status = "正在降低清晰度 · \(option.label)"
+        status = L10n.t(
+            "status.quality_lowering",
+            L10n.qualityLabel(option.label)
+        )
         authTimeoutTask?.cancel()
         if let channel = currentChannel {
             authTimeoutTask = Task { [weak self] in
@@ -710,7 +721,7 @@ final class PlaybackController: NSObject, ObservableObject {
                     self.lastWatchdogActionAt = .distantPast
                     self.officialLastProgressAt = .distantPast
                     self.isBuffering = true
-                    self.status = "清晰度切换超时，正在恢复…"
+                    self.status = L10n.t("status.quality_timeout")
                 }
             }
         }
@@ -789,7 +800,7 @@ final class PlaybackController: NSObject, ObservableObject {
         officialLastPosition = 0
         officialVideoId = nil
         officialHealthySince = nil
-        status = "正在切换备用线路…"
+        status = L10n.t("status.switching_backup")
         startWatchdog(generation: token)
 
         guard
@@ -825,7 +836,7 @@ final class PlaybackController: NSObject, ObservableObject {
                     ?? (result as? NSNumber)?.boolValue
                     ?? false
                 if accepted {
-                    self.status = "正在起播备用线路…"
+                    self.status = L10n.t("status.starting_backup")
                     return
                 }
                 self.logPlayback(
@@ -838,8 +849,8 @@ final class PlaybackController: NSObject, ObservableObject {
                     reason: "备用线路启动失败"
                 ) {
                     self.failPlayback(
-                        title: "备用线路不可用",
-                        message: "备用线路未能启动，请重新连接。"
+                        title: L10n.t("title.backup_unavailable"),
+                        message: L10n.t("msg.backup_unavailable")
                     )
                 }
             }
@@ -882,8 +893,11 @@ final class PlaybackController: NSObject, ObservableObject {
         lastObservedTime = .invalid
         lastProgressAt = Date()
         status = isBackup
-            ? "正在起播备用线路…"
-            : "正在起播 · \(currentChannel?.channelName ?? "直播")"
+            ? L10n.t("status.starting_backup")
+            : L10n.t(
+                "status.starting_channel",
+                currentChannel?.channelName ?? L10n.t("live")
+            )
         logPlayback(
             "native start backup=\(isBackup) host=\(url.host ?? "unknown")"
         )
@@ -916,12 +930,16 @@ final class PlaybackController: NSObject, ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     if !self.hasRenderedFrame {
-                        self.status = "正在起播 · \(self.currentChannel?.channelName ?? "直播")"
+                        self.status = L10n.t(
+                            "status.starting_channel",
+                            self.currentChannel?.channelName ?? L10n.t("live")
+                        )
                     }
                 case .failed:
                     self.failPlayback(
-                        title: "播放失败",
-                        message: item.error?.localizedDescription ?? "视频加载失败，请刷新重试。"
+                        title: L10n.t("title.playback_failed"),
+                        message: item.error?.localizedDescription
+                            ?? L10n.t("msg.video_load_failed")
                     )
                 default:
                     break
@@ -941,11 +959,11 @@ final class PlaybackController: NSObject, ObservableObject {
                 }
                 self.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
                 if self.isBuffering {
-                    self.status = "缓冲中…"
+                    self.status = L10n.t("status.buffering")
                 } else if self.hasRenderedFrame {
                     self.status = self.playingBackup
-                        ? "直播中 · 备用线路"
-                        : "直播中"
+                        ? L10n.t("status.playing_backup")
+                        : L10n.t("status.playing")
                 }
             }
         }
@@ -1014,9 +1032,13 @@ final class PlaybackController: NSObject, ObservableObject {
             hasVisibleVideo = true
             isPreparing = false
             isBuffering = false
-            status = playingBackup ? "直播中 · 备用线路" : "直播中"
+            status = playingBackup
+                ? L10n.t("status.playing_backup")
+                : L10n.t("status.playing")
         } else if !isBuffering {
-            status = playingBackup ? "直播中 · 备用线路" : "直播中"
+            status = playingBackup
+                ? L10n.t("status.playing_backup")
+                : L10n.t("status.playing")
         }
         if nativeRecoveryAttempts > 0,
            Date().timeIntervalSince(lastWatchdogActionAt) >= 10 {
@@ -1066,8 +1088,8 @@ final class PlaybackController: NSObject, ObservableObject {
                     beginOfficialPlayback(generation: token, automaticFallback: true)
                 } else {
                     failPlayback(
-                        title: "视频启动超时",
-                        message: "原生播放器 10 秒内没有出帧，官方兼容播放器也未能启动。请重新连接。"
+                        title: L10n.t("title.video_start_timeout"),
+                        message: L10n.t("msg.video_start_timeout")
                     )
                 }
                 return
@@ -1148,8 +1170,10 @@ final class PlaybackController: NSObject, ObservableObject {
             return
         }
         failPlayback(
-            title: playingCctvFallback ? "央视备选线路已停滞" : "直播已停滞",
-            message: "播放器连续多秒没有推进，已停止自动恢复。请重新连接。"
+            title: playingCctvFallback
+                ? L10n.t("title.cctv_stalled")
+                : L10n.t("title.live_stalled"),
+            message: L10n.t("msg.live_stalled")
         )
     }
 
@@ -1161,7 +1185,7 @@ final class PlaybackController: NSObject, ObservableObject {
         isBuffering = true
 
         if nativeRecoveryAttempts == 1 {
-            status = "正在恢复直播…"
+            status = L10n.t("status.recovering_live")
             seekToLiveEdge()
         } else if nativeRecoveryAttempts == 2, let channel = currentChannel {
             if tryNextBackup(
@@ -1170,7 +1194,7 @@ final class PlaybackController: NSObject, ObservableObject {
             ) {
                 return
             }
-            status = "正在重新连接…"
+            status = L10n.t("status.reconnecting")
             beginPlay(channel, resetRecovery: false)
         } else if nativeRecoveryAttempts == 3,
                   !usedOfficialFallback {
@@ -1179,8 +1203,8 @@ final class PlaybackController: NSObject, ObservableObject {
             return
         } else {
             failPlayback(
-                title: "播放已停滞",
-                message: "直播画面连续 4 秒没有推进。请点“重新连接”重新鉴权。"
+                title: L10n.t("title.playback_stalled"),
+                message: L10n.t("msg.playback_stalled")
             )
         }
     }
@@ -1239,8 +1263,8 @@ final class PlaybackController: NSObject, ObservableObject {
         }
         configureAudioSession()
         status = automaticFallback
-            ? "正在切换兼容播放器…"
-            : "正在启动官方播放器…"
+            ? L10n.t("status.switching_compatible")
+            : L10n.t("status.starting_official")
         logPlayback(
             "official start automatic=\(automaticFallback) " +
             "backup=\(playingBackup)"
@@ -1286,7 +1310,7 @@ final class PlaybackController: NSObject, ObservableObject {
         officialVideoId = nil
         officialRecoveryAttempts = 0
         officialHealthySince = nil
-        status = "正在切换央视备用线路 · \(reason)"
+        status = L10n.t("status.cctv_switch")
         logPlayback(
             "cctv fallback start reason=\(safeLogReason(reason))"
         )
@@ -1309,7 +1333,7 @@ final class PlaybackController: NSObject, ObservableObject {
             }
             self.resumeOfficialVideo(generation: token, retries: 10)
         }
-        status = "正在切换央视备用线路 · \(reason)"
+        status = L10n.t("status.cctv_switch")
         return true
     }
 
@@ -1318,8 +1342,8 @@ final class PlaybackController: NSObject, ObservableObject {
         fallbackRetryTask?.cancel()
         if fallbackRetryAttempts >= 8 {
             failPlayback(
-                title: "央视备选线路未恢复",
-                message: "连续重连央视备用线路仍失败，请检查网络后手动重试。"
+                title: L10n.t("title.cctv_unrecovered"),
+                message: L10n.t("msg.cctv_unrecovered")
             )
             return
         }
@@ -1329,7 +1353,7 @@ final class PlaybackController: NSObject, ObservableObject {
         let pid = channel.pid
         isPreparing = true
         isBuffering = true
-        status = "\(reason)，正在重连 \(attempt)/8"
+        status = L10n.t("status.cctv_retry", attempt)
         fallbackRetryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard !Task.isCancelled else { return }
@@ -1346,7 +1370,7 @@ final class PlaybackController: NSObject, ObservableObject {
                     return
                 }
                 self.fallbackRetryTask = nil
-                self.status = "正在重连央视备用线路 \(attempt)/8"
+                self.status = L10n.t("status.cctv_retry", attempt)
                 var request = URLRequest(url: url)
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 request.setValue(
@@ -1404,7 +1428,7 @@ final class PlaybackController: NSObject, ObservableObject {
         lastWatchdogActionAt = Date()
         officialLastProgressAt = Date()
         isBuffering = true
-        status = "正在恢复直播…"
+        status = L10n.t("status.recovering_live")
         logPlayback(
             "official recovery attempt=\(officialRecoveryAttempts)"
         )
@@ -1461,8 +1485,9 @@ final class PlaybackController: NSObject, ObservableObject {
                    let code = (mediaError["code"] as? NSNumber)?.intValue,
                    code != 0 {
                     self.failPlayback(
-                        title: "播放失败",
-                        message: mediaError["message"] as? String ?? "视频解码失败。"
+                            title: L10n.t("title.playback_failed"),
+                            message: mediaError["message"] as? String
+                                ?? L10n.t("msg.video_decode_failed")
                     )
                     return
                 }
@@ -1488,8 +1513,8 @@ final class PlaybackController: NSObject, ObservableObject {
                     self.isPreparing = true
                     self.isBuffering = true
                     self.status = self.playingBackup
-                        ? "备用线路已切换，等待画面…"
-                        : "播放器已切换，等待画面…"
+                        ? L10n.t("status.backup_switched_waiting")
+                        : L10n.t("status.video_switched_waiting")
                     return
                 }
                 guard !paused, current.isFinite else { return }
@@ -1501,13 +1526,13 @@ final class PlaybackController: NSObject, ObservableObject {
                         self.isPreparing = false
                         self.isBuffering = false
                         self.status = self.playingBackup
-                            ? "直播中 · 备用线路"
-                            : "直播中"
+                            ? L10n.t("status.playing_backup")
+                            : L10n.t("status.playing")
                     } else {
                         self.isBuffering = true
                         self.status = self.playingBackup
-                            ? "备用线路已起播，等待画面…"
-                            : "视频已起播，等待画面…"
+                            ? L10n.t("status.backup_started_waiting")
+                            : L10n.t("status.video_started_waiting")
                     }
                     if self.officialHasVideoFrame {
                         if let healthySince = self.officialHealthySince {
@@ -1542,7 +1567,7 @@ final class PlaybackController: NSObject, ObservableObject {
                 if self.hasRenderedFrame,
                    inactiveFor >= 8
                     || Date().timeIntervalSince(self.lastProgressAt) >= 3 {
-                    self.status = "正在恢复直播…"
+                    self.status = L10n.t("status.recovering_live")
                     self.isBuffering = true
                     self.lastProgressAt = Date()
                     self.seekToLiveEdge()
@@ -1656,8 +1681,9 @@ final class PlaybackController: NSObject, ObservableObject {
                 return
             }
             self.failPlayback(
-                title: "播放失败",
-                message: item.error?.localizedDescription ?? "视频播放失败，请刷新重试。"
+                title: L10n.t("title.playback_failed"),
+                message: item.error?.localizedDescription
+                    ?? L10n.t("msg.video_playback_failed")
             )
         }
     }
@@ -1690,7 +1716,7 @@ extension PlaybackController: WKNavigationDelegate {
         else {
             return
         }
-        status = "央视备选页已加载，正在启动播放…"
+        status = L10n.t("status.cctv_page_loaded")
         resumeOfficialVideo(generation: generation, retries: 10)
     }
 
@@ -1719,8 +1745,8 @@ extension PlaybackController: WKNavigationDelegate {
             return
         }
         failPlayback(
-            title: "鉴权页加载失败",
-            message: "无法加载官方鉴权页：\(error.localizedDescription)"
+            title: L10n.t("title.auth_page_failed"),
+            message: L10n.t("msg.auth_page_failed", error.localizedDescription)
         )
     }
 
@@ -1731,8 +1757,8 @@ extension PlaybackController: WKNavigationDelegate {
             return
         }
         failPlayback(
-            title: "鉴权页已终止",
-            message: "官方鉴权页被系统终止，请重新选择频道。"
+            title: L10n.t("title.auth_page_terminated"),
+            message: L10n.t("msg.auth_page_terminated")
         )
     }
 

@@ -24,20 +24,20 @@ object NotificationChannels {
         manager.createNotificationChannel(
             NotificationChannel(
                 PLAYBACK_CHANNEL,
-                "直播播放",
+                context.getString(R.string.notification_channel_playback_name),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "原生直播播放前台服务"
+                description = context.getString(R.string.notification_channel_playback_description)
                 setShowBadge(false)
             }
         )
         manager.createNotificationChannel(
             NotificationChannel(
                 BOOT_CHANNEL,
-                "开机启动",
+                context.getString(R.string.notification_channel_boot_name),
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "系统阻止后台启动应用时的提示"
+                description = context.getString(R.string.notification_channel_boot_description)
                 setShowBadge(true)
             }
         )

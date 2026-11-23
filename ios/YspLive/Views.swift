@@ -41,7 +41,7 @@ struct RootView: View {
                     .allowsHitTesting(playback.usesOfficialPlayer)
 
                 if channels.isEmpty && catalogError == nil {
-                    LoadingOverlay(message: "正在读取频道目录…")
+                    LoadingOverlay(message: L10n.t("catalog.loading"))
                         .zIndex(1)
                 } else if playback.isPreparing && !playback.hasVisibleVideo {
                     LoadingOverlay(message: playback.status)
@@ -98,9 +98,9 @@ struct RootView: View {
 
                 if let error = catalogError {
                     ErrorOverlay(
-                        title: "频道目录加载失败",
+                        title: L10n.t("catalog.load_failed"),
                         message: error,
-                        primaryTitle: "重新读取",
+                        primaryTitle: L10n.t("catalog.retry"),
                         primaryAction: {
                             Task { await loadCatalog() }
                         },
@@ -110,11 +110,11 @@ struct RootView: View {
                     .zIndex(5)
                 } else if let error = playback.errorMessage {
                     ErrorOverlay(
-                        title: "播放异常",
+                        title: L10n.t("playback.error_title"),
                         message: error,
-                        primaryTitle: "重新连接",
+                        primaryTitle: L10n.t("playback.reconnect"),
                         primaryAction: playback.reload,
-                        secondaryTitle: "选择频道",
+                        secondaryTitle: L10n.t("playback.choose_channel"),
                         secondaryAction: {
                             playback.errorMessage = nil
                             openDrawer()
@@ -161,7 +161,7 @@ struct RootView: View {
                 ?? loaded.first { $0.pid == Self.defaultPid }
                 ?? loaded.first
             guard let initial else {
-                catalogError = "App 内没有可用频道"
+                catalogError = L10n.t("catalog.no_channels")
                 return
             }
 
@@ -343,7 +343,7 @@ private struct GuidePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("节目单 · 今天")
+                Text("guide.today_title")
                     .font(.system(size: 13))
                     .foregroundStyle(AndroidTheme.guideAccent)
                 Text(guideSubtitle)
@@ -357,12 +357,12 @@ private struct GuidePane: View {
 
             switch state {
             case .idle, .loading:
-                guideMessage("正在加载节目单…")
+                guideMessage(L10n.t("guide.loading"))
             case .empty:
-                guideMessage("今天暂无节目单")
+                guideMessage(L10n.t("guide.empty"))
             case .failed(let message):
                 Button(action: onRetry) {
-                    Text("节目单加载失败\n点按重试")
+                    Text("guide.load_failed")
                         .font(.system(size: 14))
                         .foregroundStyle(AndroidTheme.secondaryText)
                         .multilineTextAlignment(.center)
@@ -432,7 +432,7 @@ private struct GuidePane: View {
     }
 
     private var guideSubtitle: String {
-        let name = channel?.channelName ?? "节目单"
+        let name = channel?.channelName ?? L10n.t("guide.fallback_name")
         return "\(name) · \(EpgDate.todayLabel())"
     }
 
